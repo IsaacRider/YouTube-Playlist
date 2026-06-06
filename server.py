@@ -122,28 +122,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif self.path == '/api/sync-status':
             self._json(200, sync_state)
             return
-        elif self.path == '/api/app-version':
-            try:
-                html_path = os.path.join(DIR, 'www', 'index.html')
-                mtime = int(os.path.getmtime(html_path))
-                self._json(200, {'version': mtime})
-            except OSError:
-                self._json(200, {'version': 0})
-            return
-        elif self.path == '/api/app-html':
-            try:
-                html_path = os.path.join(DIR, 'www', 'index.html')
-                with open(html_path, 'rb') as f:
-                    data = f.read()
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.send_header('Content-Length', len(data))
-                self.end_headers()
-                self.wfile.write(data)
-            except OSError:
-                self.send_response(404)
-                self.end_headers()
-            return
         elif self.path == '/api/tracks':
             mp3s = [f for f in os.listdir(DIR) if f.endswith('.mp3')]
             files = sorted(mp3s, key=lambda f: os.path.getmtime(os.path.join(DIR, f)), reverse=True)

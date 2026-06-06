@@ -421,18 +421,6 @@
 </div>
 
 <script>
-// Boot: if a server update was downloaded, run it instead of the bundled version
-(function() {
-  const updated = localStorage.getItem('appHtml');
-  if (updated && !window.__APP_UPDATED) {
-    window.__APP_UPDATED = true;
-    document.open();
-    document.write(updated);
-    document.close();
-    return;
-  }
-})();
-if (window.__APP_UPDATED) { /* skip bundled code */ } else {
 
 const APP_VERSION = 3;
 const IS_NATIVE = typeof window.Capacitor !== 'undefined';
@@ -2465,30 +2453,10 @@ async function loadMetadata() {
   }
 }
 
-async function checkForAppUpdate() {
-  if (!serverUrl) return;
-  try {
-    const r = await fetch(serverUrl + '/api/app-version', { signal: AbortSignal.timeout(3000) });
-    const data = await r.json();
-    const serverVersion = data.version || 0;
-    const localVersion = parseInt(localStorage.getItem('appVersion') || '0');
-    if (serverVersion > localVersion) {
-      const htmlResp = await fetch(serverUrl + '/api/app-html', { signal: AbortSignal.timeout(15000) });
-      if (htmlResp.ok) {
-        const html = await htmlResp.text();
-        localStorage.setItem('appVersion', String(serverVersion));
-        localStorage.setItem('appHtml', html);
-        window.location.reload();
-      }
-    }
-  } catch (_) {}
-}
-
 async function init() {
   if (IS_NATIVE) await ensureMusicDir();
   setupUpdateListener();
   await updateOnlineStatus();
-  await checkForAppUpdate();
   await loadMetadata();
   await loadTracks();
   await loadPlaylists();
@@ -2497,7 +2465,6 @@ async function init() {
 }
 
 init();
-} // end if (!window.__APP_UPDATED)
 </script>
 </body>
 </html>
