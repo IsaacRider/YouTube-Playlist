@@ -518,11 +518,13 @@ async function getTrackSizeNative(filename) {
 }
 
 function arrayBufferToBase64(buffer) {
-  let binary = '';
   const bytes = new Uint8Array(buffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+  const chunk = 8192;
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += chunk) {
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)));
+  }
+  return btoa(parts.join(''));
 }
 
 // --- App Update ---
