@@ -1953,6 +1953,19 @@ document.getElementById('menuDeleteAll').addEventListener('click', async () => {
       persistSave('playlists', '{}');
       persistSave('tracks', '[]');
       persistSave('playerState', '{}');
+      persistSave('metadata', '{}');
+      if (IS_NATIVE) {
+        const files = await listCachedTracksNative();
+        for (const f of files) await deleteTrackNative(f);
+      } else {
+        try {
+          const cache = await caches.open('music-v5');
+          const keys = await cache.keys();
+          for (const req of keys) {
+            if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
+          }
+        } catch (_) {}
+      }
       await loadTracks();
       await loadPlaylists();
       renderPlaylistCards();

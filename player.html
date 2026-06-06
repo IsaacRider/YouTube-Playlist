@@ -1926,6 +1926,14 @@ document.getElementById('menuDeleteAll').addEventListener('click', async () => {
       localStorage.removeItem('playlists');
       localStorage.removeItem('tracks');
       localStorage.removeItem('playerState');
+      localStorage.removeItem('metadata');
+      try {
+        const cache = await caches.open('music-v5');
+        const keys = await cache.keys();
+        for (const req of keys) {
+          if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
+        }
+      } catch (_) {}
       await loadTracks();
       await loadPlaylists();
       renderPlaylistCards();
