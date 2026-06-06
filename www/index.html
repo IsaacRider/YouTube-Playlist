@@ -245,6 +245,7 @@
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
         <button id="menuChangeServer">Change Server Address</button>
+        <button id="menuOpenFiles">Open Music Folder</button>
         <button id="menuDeleteAll" style="color:#ef4444;">Delete All Tracks</button>
       </div>
     </div>
@@ -420,6 +421,19 @@
 </div>
 
 <script>
+// Boot: if a server update was downloaded, run it instead of the bundled version
+(function() {
+  const updated = localStorage.getItem('appHtml');
+  if (updated && !window.__APP_UPDATED) {
+    window.__APP_UPDATED = true;
+    document.open();
+    document.write(updated);
+    document.close();
+    return;
+  }
+})();
+if (window.__APP_UPDATED) { /* skip bundled code */ } else {
+
 const APP_VERSION = 3;
 const IS_NATIVE = typeof window.Capacitor !== 'undefined';
 const MUSIC_DIR = 'mse_music';
@@ -509,6 +523,21 @@ async function listCachedTracksNative() {
   } catch (_) { return []; }
 }
 
+async function saveSettingNative(key, value) {
+  if (!IS_NATIVE) return;
+  try {
+    await getFS().writeFile({ path: 'mse_' + key + '.txt', directory: DIR_DATA, data: value, encoding: 'utf8' });
+  } catch (_) {}
+}
+
+async function loadSettingNative(key) {
+  if (!IS_NATIVE) return null;
+  try {
+    const result = await getFS().readFile({ path: 'mse_' + key + '.txt', directory: DIR_DATA, encoding: 'utf8' });
+    return result.data || null;
+  } catch (_) { return null; }
+}
+
 async function getTrackSizeNative(filename) {
   if (!IS_NATIVE) return 0;
   try {
@@ -525,6 +554,25 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// --- Persistent storage (localStorage + filesystem fallback) ---
+const PERSIST_KEYS = ['tracks', 'playlists', 'playerState', 'metadata', 'dlNotif', 'librarySize', 'serverUrl'];
+
+async function persistSave(key, value) {
+  localStorage.setItem(key, value);
+  if (IS_NATIVE && PERSIST_KEYS.includes(key)) {
+    saveSettingNative(key, value);
+  }
+}
+
+async function persistLoad(key) {
+  let val = localStorage.getItem(key);
+  if ((val === null || val === undefined) && IS_NATIVE && PERSIST_KEYS.includes(key)) {
+    val = await loadSettingNative(key);
+    if (val !== null) localStorage.setItem(key, val);
+  }
+  return val;
+}
+
 // --- App Update (no-op for native) ---
 function setupUpdateListener() {}
 document.getElementById('updateBtn').addEventListener('click', () => {
@@ -534,7 +582,7 @@ document.getElementById('updateBtn').addEventListener('click', () => {
 // --- Server detection ---
 async function detectServer() {
   const origins = [];
-  const saved = localStorage.getItem('serverUrl');
+  const saved = await persistLoad('serverUrl');
   if (saved) origins.push(saved);
   // Only try location.origin if it looks like a real server (not capacitor/localhost)
   if (!location.origin.includes('localhost') && !location.origin.includes('capacitor')) {
@@ -548,7 +596,7 @@ async function detectServer() {
         const data = await r.json();
         if (data.tracks) {
           serverUrl = origin;
-          localStorage.setItem('serverUrl', origin);
+          persistSave('serverUrl', origin);
           return true;
         }
       }
@@ -566,7 +614,7 @@ async function detectServer() {
           const data = await r.json();
           if (data.tracks) {
             serverUrl = cleanUrl;
-            localStorage.setItem('serverUrl', cleanUrl);
+            persistSave('serverUrl', cleanUrl);
             return true;
           }
         }
@@ -593,17 +641,17 @@ async function loadTracks() {
       const r = await fetch(serverUrl + '/api/tracks');
       const data = await r.json();
       tracks = data.tracks;
-      localStorage.setItem('tracks', JSON.stringify(tracks));
+      persistSave('tracks', JSON.stringify(tracks));
       if (data.sizes) {
         totalBytes = Object.values(data.sizes).reduce((a, b) => a + b, 0);
-        localStorage.setItem('librarySize', totalBytes);
+        persistSave('librarySize', String(totalBytes));
       }
     } catch (_) {}
   }
   if (!tracks.length) {
-    try { tracks = JSON.parse(localStorage.getItem('tracks') || '[]'); } catch (_) {}
+    try { tracks = JSON.parse(await persistLoad('tracks') || '[]'); } catch (_) {}
   }
-  if (!totalBytes) totalBytes = parseInt(localStorage.getItem('librarySize') || '0');
+  if (!totalBytes) totalBytes = parseInt(await persistLoad('librarySize') || '0');
   updateLibraryStats(totalBytes);
   rebuildOrder();
   await updateCachedStatus();
@@ -760,7 +808,7 @@ async function deleteTrack(filename) {
   }
   // Remove from local track list
   tracks = tracks.filter(t => t !== filename);
-  localStorage.setItem('tracks', JSON.stringify(tracks));
+  persistSave('tracks', JSON.stringify(tracks));
   // Remove from all playlists
   for (const name of Object.keys(playlists)) {
     if ((playlists[name] || []).includes(filename)) {
@@ -780,7 +828,7 @@ async function deleteTrack(filename) {
   cachedTracks.delete(filename);
   // Remove from metadata
   delete metadata[filename];
-  localStorage.setItem('metadata', JSON.stringify(metadata));
+  persistSave('metadata', JSON.stringify(metadata));
   rebuildOrder();
   renderPlaylist();
 }
@@ -930,7 +978,7 @@ function saveState() {
   const source = currentSource();
   const ti = order[idx];
   const filename = source[ti] || '';
-  localStorage.setItem('playerState', JSON.stringify({
+  persistSave('playerState', JSON.stringify({
     track: filename,
     playlist: activePlaylist || '',
     position: audio.currentTime || 0,
@@ -939,9 +987,9 @@ function saveState() {
   }));
 }
 
-function restoreState() {
+async function restoreState() {
   try {
-    const state = JSON.parse(localStorage.getItem('playerState'));
+    const state = JSON.parse(await persistLoad('playerState'));
     if (!state) return;
 
     if (state.volume != null) {
@@ -1076,7 +1124,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // --- Playlists ---
 async function loadPlaylists() {
-  try { playlists = JSON.parse(localStorage.getItem('playlists') || '{}'); } catch (_) {}
+  try { playlists = JSON.parse(await persistLoad('playlists') || '{}'); } catch (_) {}
 
   if (isOnline) {
     try {
@@ -1085,7 +1133,7 @@ async function loadPlaylists() {
       // Merge: server playlists override, but keep local-only ones
       const merged = { ...playlists, ...serverPl };
       playlists = merged;
-      localStorage.setItem('playlists', JSON.stringify(playlists));
+      persistSave('playlists', JSON.stringify(playlists));
       // Push any local-only playlists to server
       for (const name of Object.keys(playlists)) {
         if (!(name in serverPl)) {
@@ -1103,7 +1151,7 @@ async function loadPlaylists() {
 
 async function savePlaylist(name, trackList) {
   playlists[name] = trackList;
-  localStorage.setItem('playlists', JSON.stringify(playlists));
+  persistSave('playlists', JSON.stringify(playlists));
   if (isOnline) {
     try {
       await fetch(serverUrl + '/api/playlists', {
@@ -1118,7 +1166,7 @@ async function savePlaylist(name, trackList) {
 
 async function deletePlaylist(name) {
   delete playlists[name];
-  localStorage.setItem('playlists', JSON.stringify(playlists));
+  persistSave('playlists', JSON.stringify(playlists));
   if (isOnline) {
     try {
       await fetch(serverUrl + '/api/playlists/' + encodeURIComponent(name), { method: 'DELETE' });
@@ -1277,7 +1325,7 @@ async function renamePlaylist(oldName, newName) {
   }
   playlists[newName] = playlists[oldName];
   delete playlists[oldName];
-  localStorage.setItem('playlists', JSON.stringify(playlists));
+  persistSave('playlists', JSON.stringify(playlists));
   if (activePlaylist === oldName) activePlaylist = newName;
   if (viewingPlaylist === oldName) {
     viewingPlaylist = newName;
@@ -1870,13 +1918,29 @@ async function uploadFiles(files, playlistName) {
 }
 
 // --- Export All ---
-document.getElementById('menuChangeServer').addEventListener('click', () => {
+document.getElementById('menuChangeServer').addEventListener('click', async () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
-  const current = localStorage.getItem('serverUrl') || '';
+  const current = await persistLoad('serverUrl') || '';
   const url = prompt('Enter server address:', current);
   if (url && url.trim()) {
-    localStorage.setItem('serverUrl', url.trim());
+    const cleanUrl = url.trim().replace(/\/+$/, '');
+    persistSave('serverUrl', cleanUrl);
     window.location.reload();
+  }
+});
+
+document.getElementById('menuOpenFiles').addEventListener('click', async () => {
+  document.getElementById('hamburgerMenu').classList.remove('visible');
+  if (IS_NATIVE) {
+    try {
+      const result = await getFS().getUri({ path: MUSIC_DIR, directory: DIR_DATA });
+      const files = await listCachedTracksNative();
+      alert('Music folder:\n' + result.uri + '\n\n' + files.length + ' songs stored');
+    } catch (e) {
+      alert('Could not find music folder: ' + e.message);
+    }
+  } else {
+    alert('Music is stored in the browser cache.\n\n' + cachedTracks.size + '/' + tracks.length + ' tracks cached.');
   }
 });
 
@@ -1895,9 +1959,9 @@ document.getElementById('menuDeleteAll').addEventListener('click', async () => {
       viewingPlaylist = null;
       playlists = {};
       metadata = {};
-      localStorage.removeItem('playlists');
-      localStorage.removeItem('tracks');
-      localStorage.removeItem('playerState');
+      persistSave('playlists', '{}');
+      persistSave('tracks', '[]');
+      persistSave('playerState', '');
       await loadTracks();
       await loadPlaylists();
       renderPlaylistCards();
@@ -2215,9 +2279,9 @@ startSyncPolling();
 
 // --- Download notification toggle ---
 const dlNotifToggle = document.getElementById('dlNotifToggle');
-dlNotifToggle.checked = localStorage.getItem('dlNotif') !== 'off';
+(async () => { dlNotifToggle.checked = (await persistLoad('dlNotif')) !== 'off'; })();
 dlNotifToggle.addEventListener('change', () => {
-  localStorage.setItem('dlNotif', dlNotifToggle.checked ? 'on' : 'off');
+  persistSave('dlNotif', dlNotifToggle.checked ? 'on' : 'off');
 });
 
 // --- Download sound ---
@@ -2390,31 +2454,34 @@ function ytSearchDownload(el) {
 
 // --- Init ---
 async function loadMetadata() {
-  try { metadata = JSON.parse(localStorage.getItem('metadata') || '{}'); } catch (_) {}
+  try { metadata = JSON.parse(await persistLoad('metadata') || '{}'); } catch (_) {}
   if (isOnline) {
     try {
       const r = await fetch(serverUrl + '/api/metadata');
       const serverMeta = await r.json();
       metadata = { ...metadata, ...serverMeta };
-      localStorage.setItem('metadata', JSON.stringify(metadata));
+      persistSave('metadata', JSON.stringify(metadata));
     } catch (_) {}
   }
 }
 
 async function checkForAppUpdate() {
   if (!serverUrl) return;
-  // When server is available, load the latest version from it directly.
-  // Capacitor's native bridge stays active even after navigating to a server URL.
-  // The bundled version is only used when offline.
-  if (!location.href.includes(serverUrl)) {
-    try {
-      const r = await fetch(serverUrl + '/player.html', { signal: AbortSignal.timeout(3000) });
-      if (r.ok) {
-        window.location.href = serverUrl + '/player.html';
-        return;
+  try {
+    const r = await fetch(serverUrl + '/api/app-version', { signal: AbortSignal.timeout(3000) });
+    const data = await r.json();
+    const serverVersion = data.version || 0;
+    const localVersion = parseInt(localStorage.getItem('appVersion') || '0');
+    if (serverVersion > localVersion) {
+      const htmlResp = await fetch(serverUrl + '/api/app-html', { signal: AbortSignal.timeout(15000) });
+      if (htmlResp.ok) {
+        const html = await htmlResp.text();
+        localStorage.setItem('appVersion', String(serverVersion));
+        localStorage.setItem('appHtml', html);
+        window.location.reload();
       }
-    } catch (_) {}
-  }
+    }
+  } catch (_) {}
 }
 
 async function init() {
@@ -2430,6 +2497,7 @@ async function init() {
 }
 
 init();
+} // end if (!window.__APP_UPDATED)
 </script>
 </body>
 </html>
