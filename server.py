@@ -762,6 +762,9 @@ except Exception as e:
             self._json(400, {'error': 'Expected multipart/form-data'})
             return
 
+        if 'boundary=' not in content_type:
+            self._json(400, {'error': 'Missing boundary'})
+            return
         boundary = content_type.split('boundary=')[1].encode()
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
