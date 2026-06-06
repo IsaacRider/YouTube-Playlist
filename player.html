@@ -582,7 +582,7 @@ async function detectServer() {
 
   // Prompt for server URL if not found
   if (!serverUrl) {
-    const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)');
+    const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)', saved || '');
     if (url) {
       const cleanUrl = url.trim().replace(/\/+$/, '');
       try {
@@ -2071,19 +2071,19 @@ async function syncTracks() {
     const trackData = await trackResp.json();
     tracks = trackData.tracks || [];
     const serverIds = trackData.ids || {};
-    persistSave('tracks', JSON.stringify(tracks));
+    localStorage.setItem('tracks', JSON.stringify(tracks));
 
     // Step 2: Get playlists from server
     showProgress('Getting playlists...', 0, 1);
     const plResp = await fetch(serverUrl + '/api/playlists', { signal: syncAbort.signal });
     playlists = await plResp.json();
-    persistSave('playlists', JSON.stringify(playlists));
+    localStorage.setItem('playlists', JSON.stringify(playlists));
 
     // Step 3: Get metadata from server
     showProgress('Getting metadata...', 0, 1);
     const metaResp = await fetch(serverUrl + '/api/metadata', { signal: syncAbort.signal });
     metadata = await metaResp.json();
-    persistSave('metadata', JSON.stringify(metadata));
+    localStorage.setItem('metadata', JSON.stringify(metadata));
 
     // Step 4: Build local ID map (filename → file size)
     showProgress('Checking local files...', 0, 1);
@@ -2150,7 +2150,7 @@ async function syncTracks() {
       const r2 = await fetch(serverUrl + '/api/tracks', { signal: syncAbort.signal });
       const d2 = await r2.json();
       tracks = d2.tracks || [];
-      persistSave('tracks', JSON.stringify(tracks));
+      localStorage.setItem('tracks', JSON.stringify(tracks));
     }
 
     // Step 6: Download missing tracks (compare by ID — file size)

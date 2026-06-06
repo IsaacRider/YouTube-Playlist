@@ -151,6 +151,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif self.path == '/export-all':
             self._serve_export_zip()
         else:
+            if '?' in self.path:
+                self.path = self.path.split('?')[0]
             super().do_GET()
 
     def do_DELETE(self):
