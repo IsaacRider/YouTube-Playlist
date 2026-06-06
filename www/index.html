@@ -427,6 +427,10 @@ const IS_NATIVE = typeof window.Capacitor !== 'undefined';
 const MUSIC_DIR = 'mse_music';
 const audio = new Audio();
 audio.volume = 1.0;
+audio.addEventListener('error', () => {
+  const e = audio.error;
+  document.getElementById('nowPlaying').textContent = 'Audio error: ' + (e ? e.message || 'code ' + e.code : 'unknown');
+});
 
 let audioCtx, gainNode, sourceNode;
 function ensureGain() {
@@ -883,9 +887,15 @@ async function loadAndPlay() {
 
   if (!src) src = getTrackUrl(filename);
 
+  if (!src) {
+    document.getElementById('nowPlaying').textContent = 'Error: file not found';
+    return;
+  }
   audio.src = src;
   audio.load();
-  audio.play().catch(() => {});
+  audio.play().catch(e => {
+    document.getElementById('nowPlaying').textContent = 'Play error: ' + e.message;
+  });
 
   saveState();
 }
