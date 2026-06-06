@@ -340,11 +340,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'Invalid Spotify URL'})
             return
 
-        m = re.search(r'playlist/([a-zA-Z0-9]+)', url)
+        m = re.search(r'playlist/([a-zA-Z0-9]{22})', url)
         if not m:
             self._json(400, {'error': 'Could not find playlist ID in URL'})
             return
         playlist_id = m.group(1)
+        if not playlist_id.isalnum():
+            self._json(400, {'error': 'Invalid playlist ID'})
+            return
         print(f"\n🎵 Fetching Spotify playlist: {playlist_id}")
 
         # Use spotapi first (fast, no YouTube resolution), fall back to spotdl save

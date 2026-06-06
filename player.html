@@ -426,6 +426,37 @@ const MUSIC_DIR = 'mse_music';
 const audio = new Audio();
 audio.volume = 1.0;
 
+// Native media session bridge (Android notification controls)
+const NativeMediaSession = (() => {
+  if (!IS_NATIVE) return null;
+  const plugin = window.Capacitor?.Plugins?.MediaSession;
+  if (!plugin) return null;
+
+  plugin.addListener('mediaAction', (data) => {
+    switch (data.action) {
+      case 'play': audio.play().catch(() => {}); break;
+      case 'pause': audio.pause(); break;
+      case 'nexttrack': nextTrack(); break;
+      case 'previoustrack': prevTrack(); break;
+      case 'seekto':
+        if (data.seekTime != null && audio.duration) {
+          audio.currentTime = data.seekTime;
+        }
+        break;
+    }
+  });
+
+  return {
+    updateMetadata(title, artist, album) {
+      plugin.updateMetadata({ title, artist, album });
+    },
+    updatePlayback(playing, position, duration) {
+      plugin.updatePlayback({ playing, position, duration });
+    },
+    stop() { plugin.stop(); }
+  };
+})();
+
 let audioCtx, gainNode, sourceNode;
 function ensureGain() {
   if (gainNode) return;
@@ -558,6 +589,161 @@ document.getElementById('updateBtn').addEventListener('click', () => {
   }
 });
 
+// --- Client-side YouTube (standalone, no server needed) ---
+const ClientYT = {
+  INNERTUBE_KEY: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+  API_BASE: 'https://www.youtube.com/youtubei/v1',
+
+  _webContext: {
+    client: { clientName: 'WEB', clientVersion: '2.20250601.00.00', hl: 'en', gl: 'US' }
+  },
+
+  _androidContext: {
+    client: { clientName: 'ANDROID', clientVersion: '19.09.37', androidSdkVersion: 30, hl: 'en', gl: 'US' }
+  },
+
+  async search(query) {
+    const r = await fetch(this.API_BASE + '/search?key=' + this.INNERTUBE_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: this._webContext, query })
+    });
+    if (!r.ok) throw new Error('YouTube search failed');
+    const data = await r.json();
+    const results = [];
+    const sections = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+    for (const section of sections) {
+      const items = section?.itemSectionRenderer?.contents || [];
+      for (const item of items) {
+        const v = item?.videoRenderer;
+        if (!v || !v.videoId) continue;
+        const title = v?.title?.runs?.map(r => r.text).join('') || '';
+        const duration = v?.lengthText?.simpleText || '';
+        if (title) results.push({ title, id: v.videoId, url: 'https://www.youtube.com/watch?v=' + v.videoId, duration });
+      }
+    }
+    return results;
+  },
+
+  async getAudioUrl(videoId) {
+    const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: this._androidContext, videoId })
+    });
+    if (!r.ok) throw new Error('Failed to get video info');
+    const data = await r.json();
+    if (data.playabilityStatus?.status !== 'OK') {
+      throw new Error(data.playabilityStatus?.reason || 'Video not playable');
+    }
+    const formats = data?.streamingData?.adaptiveFormats || [];
+    const audioFormats = formats
+      .filter(f => f.mimeType && f.mimeType.startsWith('audio/'))
+      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+    const preferred = audioFormats.find(f => f.mimeType.includes('mp4')) || audioFormats[0];
+    if (!preferred || !preferred.url) throw new Error('No audio stream found');
+    const title = data?.videoDetails?.title || videoId;
+    const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
+    return { url: preferred.url, title, duration, mimeType: preferred.mimeType };
+  },
+
+  async download(videoId, displayTitle) {
+    const info = await this.getAudioUrl(videoId);
+    const filename = (displayTitle || info.title).replace(/[<>:"/\\|?*]/g, '') + '.mp3';
+
+    const resp = await fetch(info.url);
+    if (!resp.ok) throw new Error('Audio download failed');
+    const buffer = await resp.arrayBuffer();
+
+    if (IS_NATIVE) {
+      await saveTrackNative(filename, buffer);
+    } else {
+      try {
+        const cache = await caches.open('music-v5');
+        const blob = new Blob([buffer], { type: 'audio/mpeg' });
+        await cache.put('/' + encodeURI(filename), new Response(blob));
+      } catch (e) { throw new Error('Failed to cache: ' + e.message); }
+    }
+
+    // Add to tracks list and metadata
+    if (!tracks.includes(filename)) {
+      tracks.unshift(filename);
+      localStorage.setItem('tracks', JSON.stringify(tracks));
+    }
+    const meta = JSON.parse(localStorage.getItem('metadata') || '{}');
+    meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId };
+    localStorage.setItem('metadata', JSON.stringify(meta));
+    metadata = meta;
+
+    return { filename, title: info.title };
+  }
+};
+
+// --- Client-side Spotify (standalone, no server needed) ---
+const ClientSpotify = {
+  _token: null,
+  _tokenExpiry: 0,
+
+  async _getToken() {
+    if (this._token && Date.now() < this._tokenExpiry) return this._token;
+    const r = await fetch('https://open.spotify.com/get_access_token?reason=transport&productType=web_player');
+    if (!r.ok) throw new Error('Could not get Spotify access token');
+    const data = await r.json();
+    this._token = data.accessToken;
+    this._tokenExpiry = data.accessTokenExpirationTimestampMs || (Date.now() + 3600000);
+    return this._token;
+  },
+
+  async getPlaylistTracks(playlistId) {
+    const token = await this._getToken();
+    const tracks = [];
+    let playlistName = '';
+    let offset = 0;
+    const limit = 100;
+
+    while (true) {
+      const r = await fetch(
+        `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(name,artists(name))),total,next`,
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (!r.ok) {
+        if (r.status === 401) {
+          this._token = null;
+          throw new Error('Spotify auth expired, try again');
+        }
+        throw new Error('Failed to fetch Spotify playlist');
+      }
+      const data = await r.json();
+      for (const item of (data.items || [])) {
+        const t = item?.track;
+        if (!t || !t.name) continue;
+        const artists = (t.artists || []).map(a => a.name).join(', ');
+        tracks.push({
+          name: t.name,
+          artist: artists,
+          query: artists ? `${artists} - ${t.name}` : t.name
+        });
+      }
+      offset += limit;
+      if (!data.next || offset >= (data.total || 0)) break;
+    }
+
+    // Get playlist name
+    try {
+      const r2 = await fetch(
+        `https://api.spotify.com/v1/playlists/${playlistId}?fields=name`,
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (r2.ok) {
+        const d2 = await r2.json();
+        playlistName = d2.name || '';
+      }
+    } catch (_) {}
+
+    return { tracks, name: playlistName || `Spotify (${tracks.length} tracks)` };
+  }
+};
+
 // --- Server detection ---
 async function detectServer() {
   const origins = [];
@@ -582,8 +768,9 @@ async function detectServer() {
     } catch (_) {}
   }
 
-  // Prompt for server URL if not found
-  if (!serverUrl) {
+  // Only prompt if no saved URL and no internet (user probably wants to connect)
+  // Skip prompting when internet is available — standalone mode works fine
+  if (!serverUrl && !navigator.onLine) {
     const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)', saved || '');
     if (url) {
       const cleanUrl = url.trim().replace(/\/+$/, '');
@@ -605,10 +792,13 @@ async function detectServer() {
 
 async function updateOnlineStatus() {
   isOnline = await detectServer();
-  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : 'offline');
-  document.getElementById('statusText').textContent = isOnline ? 'Connected' : 'Offline';
-  document.getElementById('dlBtn').disabled = !isOnline;
-  document.getElementById('ytUrl').placeholder = isOnline ? 'Paste YouTube or Spotify playlist link...' : 'Connect to server to download...';
+  const hasInternet = navigator.onLine !== false;
+  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : hasInternet ? 'online' : 'offline');
+  document.getElementById('statusText').textContent = isOnline ? 'Server' : hasInternet ? 'Standalone' : 'Offline';
+  document.getElementById('dlBtn').disabled = !isOnline && !hasInternet;
+  document.getElementById('ytUrl').placeholder = isOnline
+    ? 'Paste YouTube or Spotify playlist link...'
+    : hasInternet ? 'Paste YouTube or Spotify link...' : 'No internet connection';
   document.getElementById('menuSync').disabled = !isOnline;
 }
 
@@ -630,6 +820,16 @@ async function loadTracks() {
   if (!tracks.length) {
     try { tracks = JSON.parse(localStorage.getItem('tracks') || '[]'); } catch (_) {}
   }
+
+  // Merge in any locally-stored tracks not on server (standalone downloads)
+  if (IS_NATIVE) {
+    const localFiles = await listCachedTracksNative();
+    for (const f of localFiles) {
+      if (!tracks.includes(f)) tracks.unshift(f);
+    }
+    localStorage.setItem('tracks', JSON.stringify(tracks));
+  }
+
   if (!totalBytes) totalBytes = parseInt(localStorage.getItem('librarySize') || '0');
   updateLibraryStats(totalBytes);
   rebuildOrder();
@@ -880,20 +1080,25 @@ async function loadAndPlay() {
 }
 
 function updateMediaSession(filename) {
-  if (!('mediaSession' in navigator)) return;
   const p = parseTrack(filename);
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: p.title || p.display,
-    artist: p.artist || 'Unknown Artist',
-    album: activePlaylist || 'All Tracks'
-  });
-  navigator.mediaSession.setActionHandler('play', () => { audio.play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
-  navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
-  navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
-  navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
-  navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
-  navigator.mediaSession.setActionHandler('seekforward', (d) => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); });
+  const title = p.title || p.display;
+  const artist = p.artist || 'Unknown Artist';
+  const album = activePlaylist || 'All Tracks';
+
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album });
+    navigator.mediaSession.setActionHandler('play', () => { audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
+    navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+    navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
+    navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+    navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
+    navigator.mediaSession.setActionHandler('seekforward', (d) => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); });
+  }
+
+  if (NativeMediaSession) {
+    NativeMediaSession.updateMetadata(title, artist, album);
+  }
 }
 
 function fmt(s) {
@@ -904,7 +1109,7 @@ function fmt(s) {
 // --- Controls ---
 document.getElementById('playBtn').addEventListener('click', () => {
   ensureGain();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   if (!currentSource().length) return;
   if (!loaded) { loadAndPlay(); return; }
   if (audio.paused) {
@@ -1039,8 +1244,15 @@ function restoreState() {
 }
 
 audio.addEventListener('ended', () => { idx = (idx + 1) % order.length; loadAndPlay(); });
-audio.addEventListener('pause', () => { document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>'; saveState(); });
-audio.addEventListener('play', () => { document.getElementById('playIcon').innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>'; });
+audio.addEventListener('pause', () => {
+  document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
+  saveState();
+  if (NativeMediaSession) NativeMediaSession.updatePlayback(false, audio.currentTime, audio.duration || 0);
+});
+audio.addEventListener('play', () => {
+  document.getElementById('playIcon').innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>';
+  if (NativeMediaSession) NativeMediaSession.updatePlayback(true, audio.currentTime, audio.duration || 0);
+});
 window.addEventListener('beforeunload', saveState);
 let isSeeking = false;
 let pendingSeekPct = null;
@@ -1054,6 +1266,9 @@ audio.addEventListener('timeupdate', () => {
   document.getElementById('durTime').textContent = fmt(audio.duration);
   if ('mediaSession' in navigator && audio.duration) {
     navigator.mediaSession.setPositionState({ duration: audio.duration, playbackRate: audio.playbackRate, position: audio.currentTime });
+  }
+  if (NativeMediaSession && audio.duration) {
+    NativeMediaSession.updatePlayback(!audio.paused, audio.currentTime, audio.duration);
   }
   const now = Date.now();
   if (now - lastStateSave > 5000) { lastStateSave = now; saveState(); }
@@ -1551,7 +1766,8 @@ document.getElementById('ytUrl').addEventListener('keydown', (e) => { if (e.key 
 
 async function downloadYT() {
   const url = document.getElementById('ytUrl').value.trim();
-  if (!url || !isOnline) return;
+  const hasInternet = navigator.onLine !== false;
+  if (!url || (!isOnline && !hasInternet)) return;
 
   // Detect Spotify URL
   if (url.includes('spotify.com')) {
@@ -1564,43 +1780,91 @@ async function downloadYT() {
   btn.disabled = true;
   btn.textContent = 'Downloading...';
   status.className = 'dl-status';
-  status.textContent = 'Downloading from YouTube (playlists may take a while)...';
-  try {
-    const r = await fetch(serverUrl + '/api/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await r.json();
-    if (data.ok) {
-      status.className = 'dl-status success';
-      status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!`;
-      document.getElementById('ytUrl').value = '';
-      playDownloadSound();
 
-      await loadMetadata();
+  // Use server if available, otherwise download directly
+  if (isOnline) {
+    status.textContent = 'Downloading from YouTube (playlists may take a while)...';
+    try {
+      const r = await fetch(serverUrl + '/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await r.json();
+      if (data.ok) {
+        status.className = 'dl-status success';
+        status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!`;
+        document.getElementById('ytUrl').value = '';
+        playDownloadSound();
 
-      if (viewingPlaylist && data.tracks && data.tracks.length) {
-        const pl = playlists[viewingPlaylist] || [];
-        const newTracks = data.tracks.filter(t => !pl.includes(t));
-        if (newTracks.length) {
-          await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+        await loadMetadata();
+
+        if (viewingPlaylist && data.tracks && data.tracks.length) {
+          const pl = playlists[viewingPlaylist] || [];
+          const newTracks = data.tracks.filter(t => !pl.includes(t));
+          if (newTracks.length) {
+            await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+          }
         }
-      }
 
-      await loadTracks();
-      if (viewingPlaylist) renderPlaylistDetail();
-    } else {
+        await loadTracks();
+        if (viewingPlaylist) renderPlaylistDetail();
+      } else {
+        status.className = 'dl-status error';
+        status.textContent = data.error || 'Download failed';
+      }
+    } catch (e) {
       status.className = 'dl-status error';
-      status.textContent = data.error || 'Download failed';
+      status.textContent = 'Server error';
     }
-  } catch (e) {
-    status.className = 'dl-status error';
-    status.textContent = 'Server error';
+  } else {
+    status.textContent = 'Downloading directly...';
+    try {
+      const videoId = extractVideoId(url);
+      if (!videoId) throw new Error('Invalid YouTube URL');
+      if (isAlreadyDownloaded(videoId)) {
+        status.className = 'dl-status';
+        status.textContent = 'Already downloaded';
+      } else {
+        const result = await ClientYT.download(videoId);
+        status.className = 'dl-status success';
+        status.textContent = `Added: ${result.title}`;
+        document.getElementById('ytUrl').value = '';
+        playDownloadSound();
+
+        if (viewingPlaylist && result.filename) {
+          const pl = playlists[viewingPlaylist] || [];
+          if (!pl.includes(result.filename)) {
+            await savePlaylist(viewingPlaylist, [...pl, result.filename]);
+          }
+        }
+
+        rebuildOrder();
+        await updateCachedStatus();
+        renderPlaylist();
+        if (viewingPlaylist) renderPlaylistDetail();
+      }
+    } catch (e) {
+      status.className = 'dl-status error';
+      status.textContent = e.message || 'Download failed';
+    }
   }
   btn.disabled = false;
   btn.textContent = 'Add';
   setTimeout(() => { status.textContent = ''; }, 5000);
+}
+
+function extractVideoId(url) {
+  const m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/) || url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function isAlreadyDownloaded(videoId) {
+  const ytUrl = 'https://www.youtube.com/watch?v=' + videoId;
+  for (const [, info] of Object.entries(metadata)) {
+    if (info.youtube_url && info.youtube_url.includes(videoId)) return true;
+  }
+  return false;
 }
 
 const spotifyQueue = [];
@@ -1652,7 +1916,14 @@ function renderSpotifyModal() {
     for (const entry of job.logEntries) {
       const item = document.createElement('div');
       item.className = 'spotify-log-item';
-      item.innerHTML = `<span class="spotify-log-name">${entry.label}</span><span class="spotify-log-status ${entry.cls}">${entry.text}</span>`;
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'spotify-log-name';
+      nameSpan.textContent = entry.label || '';
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'spotify-log-status ' + (entry.cls || '');
+      statusSpan.textContent = entry.text || '';
+      item.appendChild(nameSpan);
+      item.appendChild(statusSpan);
       log.appendChild(item);
     }
   }
@@ -1686,38 +1957,66 @@ async function processSpotifyQueue() {
       updateSpotifyLogsBtn();
 
       try {
-        const dr = await fetch(serverUrl + '/api/download-search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: track.query })
-        });
-        const dd = await dr.json();
-        if (dd.ok) {
-          if (dd.skipped) {
-            entry.text = dd.reason ? `Skipped: ${dd.reason}` : 'Skipped (already have)';
-            entry.cls = 'log-skip';
-            job.skipped++;
+        if (isOnline) {
+          const dr = await fetch(serverUrl + '/api/download-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: track.query })
+          });
+          const dd = await dr.json();
+          if (dd.ok) {
+            if (dd.skipped) {
+              entry.text = dd.reason ? `Skipped: ${dd.reason}` : 'Skipped (already have)';
+              entry.cls = 'log-skip';
+              job.skipped++;
+            } else {
+              entry.text = '✓ Done';
+              entry.cls = 'log-done';
+              job.completed++;
+              const scrollY = window.scrollY;
+              await loadTracks();
+              window.scrollTo(0, scrollY);
+              if (viewingPlaylist && dd.tracks && dd.tracks.length) {
+                const pl = playlists[viewingPlaylist] || [];
+                const newTracks = dd.tracks.filter(t => !pl.includes(t));
+                if (newTracks.length) {
+                  await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+                }
+                renderPlaylistDetail();
+                window.scrollTo(0, scrollY);
+              }
+            }
           } else {
+            entry.text = dd.error || 'Failed';
+            entry.cls = 'log-fail';
+            job.failed++;
+          }
+        } else {
+          // Standalone: search YouTube and download first result
+          const results = await ClientYT.search(track.query);
+          if (!results.length) {
+            entry.text = 'No results found';
+            entry.cls = 'log-fail';
+            job.failed++;
+          } else {
+            const result = await ClientYT.download(results[0].id, results[0].title);
             entry.text = '✓ Done';
             entry.cls = 'log-done';
             job.completed++;
             const scrollY = window.scrollY;
-            await loadTracks();
+            rebuildOrder();
+            await updateCachedStatus();
+            renderPlaylist();
             window.scrollTo(0, scrollY);
-            if (viewingPlaylist && dd.tracks && dd.tracks.length) {
+            if (viewingPlaylist && result.filename) {
               const pl = playlists[viewingPlaylist] || [];
-              const newTracks = dd.tracks.filter(t => !pl.includes(t));
-              if (newTracks.length) {
-                await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+              if (!pl.includes(result.filename)) {
+                await savePlaylist(viewingPlaylist, [...pl, result.filename]);
               }
               renderPlaylistDetail();
               window.scrollTo(0, scrollY);
             }
           }
-        } else {
-          entry.text = dd.error || 'Failed';
-          entry.cls = 'log-fail';
-          job.failed++;
         }
       } catch (e) {
         entry.text = 'Error';
@@ -1749,12 +2048,19 @@ async function importSpotifyPlaylist(url) {
   status.textContent = 'Reading Spotify playlist...';
 
   try {
-    const r = await fetch(serverUrl + '/api/spotify-playlist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await r.json();
+    let data;
+    if (isOnline) {
+      const r = await fetch(serverUrl + '/api/spotify-playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      data = await r.json();
+    } else {
+      const m = url.match(/playlist\/([a-zA-Z0-9]+)/);
+      if (!m) throw new Error('Invalid Spotify playlist URL');
+      data = await ClientSpotify.getPlaylistTracks(m[1]);
+    }
     if (!data.tracks || !data.tracks.length) {
       status.className = 'dl-status error';
       status.textContent = data.error || 'No tracks found in playlist';
@@ -1990,7 +2296,16 @@ async function loadDevices() {
       }).join('');
     }
   } catch (e) {
-    content.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">Could not reach server<br><span style="font-size:11px;color:#888;">${serverUrl || 'No server URL'} — ${e.message}</span></div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:#ef4444;text-align:center;padding:20px;';
+    errDiv.textContent = 'Could not reach server';
+    const errDetail = document.createElement('span');
+    errDetail.style.cssText = 'font-size:11px;color:#888;display:block;margin-top:4px;';
+    errDetail.textContent = (serverUrl || 'No server URL') + ' — ' + e.message;
+    errDiv.appendChild(document.createElement('br'));
+    errDiv.appendChild(errDetail);
+    content.innerHTML = '';
+    content.appendChild(errDiv);
   }
 }
 document.getElementById('menuViewDevices').addEventListener('click', () => {
@@ -2359,7 +2674,8 @@ document.getElementById('ytSearchInput').addEventListener('keydown', (e) => {
 
 async function ytSearch() {
   const query = document.getElementById('ytSearchInput').value.trim();
-  if (!query || !isOnline) return;
+  const hasInternet = navigator.onLine !== false;
+  if (!query || (!isOnline && !hasInternet)) return;
   const results = document.getElementById('ytSearchResults');
   const btn = document.getElementById('ytSearchGoBtn');
   btn.disabled = true;
@@ -2367,30 +2683,56 @@ async function ytSearch() {
   results.innerHTML = '<div style="color:#888; font-size:13px; padding:20px 0; text-align:center;">Searching...</div>';
 
   try {
-    const r = await fetch(serverUrl + '/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
-    });
-    const data = await r.json();
-    if (data.results && data.results.length) {
-      results.innerHTML = data.results.map((item, i) => {
-        return `<div class="search-result" data-url="${item.url}" data-idx="${i}">
-          <div class="search-result-info">
-            <div class="search-result-title">${item.title}</div>
-          </div>
-          <span class="search-result-dl">⬇</span>
-        </div>`;
-      }).join('');
+    let searchResults;
+    if (isOnline) {
+      const r = await fetch(serverUrl + '/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const data = await r.json();
+      searchResults = data.results;
+    } else {
+      searchResults = await ClientYT.search(query);
+    }
 
-      results.querySelectorAll('.search-result').forEach(el => {
+    if (searchResults && searchResults.length) {
+      results.innerHTML = '';
+      searchResults.forEach((item, i) => {
+        const el = document.createElement('div');
+        el.className = 'search-result';
+        el.dataset.url = item.url || '';
+        el.dataset.id = item.id || '';
+        el.dataset.idx = i;
+        const info = document.createElement('div');
+        info.className = 'search-result-info';
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'search-result-title';
+        titleDiv.textContent = item.title || '';
+        if (item.duration) {
+          const durSpan = document.createElement('span');
+          durSpan.style.cssText = 'color:#888;font-size:11px;margin-left:6px;';
+          durSpan.textContent = item.duration;
+          titleDiv.appendChild(durSpan);
+        }
+        info.appendChild(titleDiv);
+        el.appendChild(info);
+        const dlSpan = document.createElement('span');
+        dlSpan.className = 'search-result-dl';
+        dlSpan.textContent = '⬇';
+        el.appendChild(dlSpan);
         el.addEventListener('click', () => ytSearchDownload(el));
+        results.appendChild(el);
       });
     } else {
       results.innerHTML = '<div style="color:#888; font-size:13px; padding:20px 0; text-align:center;">No results found.</div>';
     }
   } catch (e) {
-    results.innerHTML = '<div style="color:#ef4444; font-size:13px; padding:20px 0; text-align:center;">Search failed. Check server connection.</div>';
+    const errEl = document.createElement('div');
+    errEl.style.cssText = 'color:#ef4444; font-size:13px; padding:20px 0; text-align:center;';
+    errEl.textContent = e.message || 'Search failed.';
+    results.innerHTML = '';
+    results.appendChild(errEl);
   }
   btn.disabled = false;
   btn.textContent = 'Search';
@@ -2398,7 +2740,7 @@ async function ytSearch() {
 
 let dlQueueId = 0;
 
-function addToDownloadQueue(title, url) {
+function addToDownloadQueue(title, url, videoId) {
   const id = ++dlQueueId;
   const queue = document.getElementById('dlQueue');
   const item = document.createElement('div');
@@ -2414,32 +2756,53 @@ function addToDownloadQueue(title, url) {
   (async () => {
     const statusEl = item.querySelector('.dl-queue-status');
     try {
-      const r = await fetch(serverUrl + '/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
-      });
-      const data = await r.json();
-      if (data.ok) {
+      if (isOnline) {
+        const r = await fetch(serverUrl + '/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await r.json();
+        if (data.ok) {
+          statusEl.textContent = '✓ Done';
+          statusEl.className = 'dl-queue-status done';
+          playDownloadSound();
+
+          await loadMetadata();
+
+          if (viewingPlaylist && data.tracks && data.tracks.length) {
+            const pl = playlists[viewingPlaylist] || [];
+            const newTracks = data.tracks.filter(t => !pl.includes(t));
+            if (newTracks.length) {
+              await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+            }
+          }
+
+          await loadTracks();
+          if (viewingPlaylist) renderPlaylistDetail();
+        } else {
+          statusEl.textContent = data.error || 'Failed';
+          statusEl.className = 'dl-queue-status error';
+        }
+      } else {
+        const vid = videoId || extractVideoId(url);
+        if (!vid) throw new Error('Invalid URL');
+        const result = await ClientYT.download(vid, title);
         statusEl.textContent = '✓ Done';
         statusEl.className = 'dl-queue-status done';
         playDownloadSound();
 
-        await loadMetadata();
-
-        if (viewingPlaylist && data.tracks && data.tracks.length) {
+        if (viewingPlaylist && result.filename) {
           const pl = playlists[viewingPlaylist] || [];
-          const newTracks = data.tracks.filter(t => !pl.includes(t));
-          if (newTracks.length) {
-            await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+          if (!pl.includes(result.filename)) {
+            await savePlaylist(viewingPlaylist, [...pl, result.filename]);
           }
         }
 
-        await loadTracks();
+        rebuildOrder();
+        await updateCachedStatus();
+        renderPlaylist();
         if (viewingPlaylist) renderPlaylistDetail();
-      } else {
-        statusEl.textContent = data.error || 'Failed';
-        statusEl.className = 'dl-queue-status error';
       }
     } catch (e) {
       statusEl.textContent = 'Error';
@@ -2451,10 +2814,11 @@ function addToDownloadQueue(title, url) {
 
 function ytSearchDownload(el) {
   const url = el.dataset.url;
+  const videoId = el.dataset.id || extractVideoId(url);
   const title = el.querySelector('.search-result-title').textContent;
   el.classList.add('downloading');
   el.querySelector('.search-result-dl').textContent = '✓';
-  addToDownloadQueue(title, url);
+  addToDownloadQueue(title, url, videoId);
 }
 
 // --- Init ---

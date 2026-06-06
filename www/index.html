@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111111">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<!-- manifest not needed for native app -->
+<link rel="manifest" href="/manifest.json">
 <title>Music Subscription Escape</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -245,7 +245,6 @@
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
         <button id="menuChangeServer">Change Server Address</button>
-        <button id="menuOpenFiles">Open Music Folder</button>
         <button id="menuDeleteAll" style="color:#ef4444;">Delete All Tracks</button>
       </div>
     </div>
@@ -421,16 +420,42 @@
 </div>
 
 <script>
-
 const APP_VERSION = 3;
 const IS_NATIVE = typeof window.Capacitor !== 'undefined';
 const MUSIC_DIR = 'mse_music';
 const audio = new Audio();
 audio.volume = 1.0;
-audio.addEventListener('error', () => {
-  const e = audio.error;
-  document.getElementById('nowPlaying').textContent = 'Audio error: ' + (e ? e.message || 'code ' + e.code : 'unknown');
-});
+
+// Native media session bridge (Android notification controls)
+const NativeMediaSession = (() => {
+  if (!IS_NATIVE) return null;
+  const plugin = window.Capacitor?.Plugins?.MediaSession;
+  if (!plugin) return null;
+
+  plugin.addListener('mediaAction', (data) => {
+    switch (data.action) {
+      case 'play': audio.play().catch(() => {}); break;
+      case 'pause': audio.pause(); break;
+      case 'nexttrack': nextTrack(); break;
+      case 'previoustrack': prevTrack(); break;
+      case 'seekto':
+        if (data.seekTime != null && audio.duration) {
+          audio.currentTime = data.seekTime;
+        }
+        break;
+    }
+  });
+
+  return {
+    updateMetadata(title, artist, album) {
+      plugin.updateMetadata({ title, artist, album });
+    },
+    updatePlayback(playing, position, duration) {
+      plugin.updatePlayback({ playing, position, duration });
+    },
+    stop() { plugin.stop(); }
+  };
+})();
 
 let audioCtx, gainNode, sourceNode;
 function ensureGain() {
@@ -515,21 +540,6 @@ async function listCachedTracksNative() {
   } catch (_) { return []; }
 }
 
-async function saveSettingNative(key, value) {
-  if (!IS_NATIVE) return;
-  try {
-    await getFS().writeFile({ path: 'mse_' + key + '.txt', directory: DIR_DATA, data: value, encoding: 'utf8' });
-  } catch (_) {}
-}
-
-async function loadSettingNative(key) {
-  if (!IS_NATIVE) return null;
-  try {
-    const result = await getFS().readFile({ path: 'mse_' + key + '.txt', directory: DIR_DATA, encoding: 'utf8' });
-    return result.data || null;
-  } catch (_) { return null; }
-}
-
 async function getTrackSizeNative(filename) {
   if (!IS_NATIVE) return 0;
   try {
@@ -548,35 +558,196 @@ function arrayBufferToBase64(buffer) {
   return btoa(parts.join(''));
 }
 
-// --- Persistent storage (localStorage + filesystem fallback) ---
-const PERSIST_KEYS = ['tracks', 'playlists', 'playerState', 'metadata', 'dlNotif', 'librarySize', 'serverUrl'];
-
-async function persistSave(key, value) {
-  localStorage.setItem(key, value);
-  if (IS_NATIVE && PERSIST_KEYS.includes(key)) {
-    await saveSettingNative(key, value);
-  }
+// --- App Update ---
+function setupUpdateListener() {
+  if (IS_NATIVE || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const newWorker = reg.installing;
+      newWorker.addEventListener('statechange', () => {
+        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+          waitingWorker = newWorker;
+          document.getElementById('updateBtn').classList.add('visible');
+        }
+      });
+    });
+    if (reg.waiting && navigator.serviceWorker.controller) {
+      waitingWorker = reg.waiting;
+      document.getElementById('updateBtn').classList.add('visible');
+    }
+    setInterval(() => reg.update(), 60000);
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.location.reload();
+  });
 }
-
-async function persistLoad(key) {
-  let val = localStorage.getItem(key);
-  if ((val === null || val === undefined) && IS_NATIVE && PERSIST_KEYS.includes(key)) {
-    val = await loadSettingNative(key);
-    if (val !== null) localStorage.setItem(key, val);
-  }
-  return val;
-}
-
-// --- App Update (no-op for native) ---
-function setupUpdateListener() {}
 document.getElementById('updateBtn').addEventListener('click', () => {
-  window.location.reload();
+  if (waitingWorker) {
+    waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+  } else {
+    window.location.reload();
+  }
 });
+
+// --- Client-side YouTube (standalone, no server needed) ---
+const ClientYT = {
+  INNERTUBE_KEY: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+  API_BASE: 'https://www.youtube.com/youtubei/v1',
+
+  _webContext: {
+    client: { clientName: 'WEB', clientVersion: '2.20250601.00.00', hl: 'en', gl: 'US' }
+  },
+
+  _androidContext: {
+    client: { clientName: 'ANDROID', clientVersion: '19.09.37', androidSdkVersion: 30, hl: 'en', gl: 'US' }
+  },
+
+  async search(query) {
+    const r = await fetch(this.API_BASE + '/search?key=' + this.INNERTUBE_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: this._webContext, query })
+    });
+    if (!r.ok) throw new Error('YouTube search failed');
+    const data = await r.json();
+    const results = [];
+    const sections = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+    for (const section of sections) {
+      const items = section?.itemSectionRenderer?.contents || [];
+      for (const item of items) {
+        const v = item?.videoRenderer;
+        if (!v || !v.videoId) continue;
+        const title = v?.title?.runs?.map(r => r.text).join('') || '';
+        const duration = v?.lengthText?.simpleText || '';
+        if (title) results.push({ title, id: v.videoId, url: 'https://www.youtube.com/watch?v=' + v.videoId, duration });
+      }
+    }
+    return results;
+  },
+
+  async getAudioUrl(videoId) {
+    const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: this._androidContext, videoId })
+    });
+    if (!r.ok) throw new Error('Failed to get video info');
+    const data = await r.json();
+    if (data.playabilityStatus?.status !== 'OK') {
+      throw new Error(data.playabilityStatus?.reason || 'Video not playable');
+    }
+    const formats = data?.streamingData?.adaptiveFormats || [];
+    const audioFormats = formats
+      .filter(f => f.mimeType && f.mimeType.startsWith('audio/'))
+      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+    const preferred = audioFormats.find(f => f.mimeType.includes('mp4')) || audioFormats[0];
+    if (!preferred || !preferred.url) throw new Error('No audio stream found');
+    const title = data?.videoDetails?.title || videoId;
+    const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
+    return { url: preferred.url, title, duration, mimeType: preferred.mimeType };
+  },
+
+  async download(videoId, displayTitle) {
+    const info = await this.getAudioUrl(videoId);
+    const filename = (displayTitle || info.title).replace(/[<>:"/\\|?*]/g, '') + '.mp3';
+
+    const resp = await fetch(info.url);
+    if (!resp.ok) throw new Error('Audio download failed');
+    const buffer = await resp.arrayBuffer();
+
+    if (IS_NATIVE) {
+      await saveTrackNative(filename, buffer);
+    } else {
+      try {
+        const cache = await caches.open('music-v5');
+        const blob = new Blob([buffer], { type: 'audio/mpeg' });
+        await cache.put('/' + encodeURI(filename), new Response(blob));
+      } catch (e) { throw new Error('Failed to cache: ' + e.message); }
+    }
+
+    // Add to tracks list and metadata
+    if (!tracks.includes(filename)) {
+      tracks.unshift(filename);
+      localStorage.setItem('tracks', JSON.stringify(tracks));
+    }
+    const meta = JSON.parse(localStorage.getItem('metadata') || '{}');
+    meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId };
+    localStorage.setItem('metadata', JSON.stringify(meta));
+    metadata = meta;
+
+    return { filename, title: info.title };
+  }
+};
+
+// --- Client-side Spotify (standalone, no server needed) ---
+const ClientSpotify = {
+  _token: null,
+  _tokenExpiry: 0,
+
+  async _getToken() {
+    if (this._token && Date.now() < this._tokenExpiry) return this._token;
+    const r = await fetch('https://open.spotify.com/get_access_token?reason=transport&productType=web_player');
+    if (!r.ok) throw new Error('Could not get Spotify access token');
+    const data = await r.json();
+    this._token = data.accessToken;
+    this._tokenExpiry = data.accessTokenExpirationTimestampMs || (Date.now() + 3600000);
+    return this._token;
+  },
+
+  async getPlaylistTracks(playlistId) {
+    const token = await this._getToken();
+    const tracks = [];
+    let playlistName = '';
+    let offset = 0;
+    const limit = 100;
+
+    while (true) {
+      const r = await fetch(
+        `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(name,artists(name))),total,next`,
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (!r.ok) {
+        if (r.status === 401) {
+          this._token = null;
+          throw new Error('Spotify auth expired, try again');
+        }
+        throw new Error('Failed to fetch Spotify playlist');
+      }
+      const data = await r.json();
+      for (const item of (data.items || [])) {
+        const t = item?.track;
+        if (!t || !t.name) continue;
+        const artists = (t.artists || []).map(a => a.name).join(', ');
+        tracks.push({
+          name: t.name,
+          artist: artists,
+          query: artists ? `${artists} - ${t.name}` : t.name
+        });
+      }
+      offset += limit;
+      if (!data.next || offset >= (data.total || 0)) break;
+    }
+
+    // Get playlist name
+    try {
+      const r2 = await fetch(
+        `https://api.spotify.com/v1/playlists/${playlistId}?fields=name`,
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (r2.ok) {
+        const d2 = await r2.json();
+        playlistName = d2.name || '';
+      }
+    } catch (_) {}
+
+    return { tracks, name: playlistName || `Spotify (${tracks.length} tracks)` };
+  }
+};
 
 // --- Server detection ---
 async function detectServer() {
   const origins = [];
-  const saved = await persistLoad('serverUrl');
+  const saved = localStorage.getItem('serverUrl');
   if (saved) origins.push(saved);
   // Only try location.origin if it looks like a real server (not capacitor/localhost)
   if (!IS_NATIVE) {
@@ -590,15 +761,16 @@ async function detectServer() {
         const data = await r.json();
         if (data.tracks) {
           serverUrl = origin;
-          persistSave('serverUrl', origin);
+          localStorage.setItem('serverUrl', origin);
           return true;
         }
       }
     } catch (_) {}
   }
 
-  // Prompt for server URL if not found
-  if (!serverUrl) {
+  // Only prompt if no saved URL and no internet (user probably wants to connect)
+  // Skip prompting when internet is available — standalone mode works fine
+  if (!serverUrl && !navigator.onLine) {
     const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)', saved || '');
     if (url) {
       const cleanUrl = url.trim().replace(/\/+$/, '');
@@ -608,7 +780,7 @@ async function detectServer() {
           const data = await r.json();
           if (data.tracks) {
             serverUrl = cleanUrl;
-            persistSave('serverUrl', cleanUrl);
+            localStorage.setItem('serverUrl', cleanUrl);
             return true;
           }
         }
@@ -620,10 +792,13 @@ async function detectServer() {
 
 async function updateOnlineStatus() {
   isOnline = await detectServer();
-  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : 'offline');
-  document.getElementById('statusText').textContent = isOnline ? 'Connected' : 'Offline';
-  document.getElementById('dlBtn').disabled = !isOnline;
-  document.getElementById('ytUrl').placeholder = isOnline ? 'Paste YouTube or Spotify playlist link...' : 'Connect to server to download...';
+  const hasInternet = navigator.onLine !== false;
+  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : hasInternet ? 'online' : 'offline');
+  document.getElementById('statusText').textContent = isOnline ? 'Server' : hasInternet ? 'Standalone' : 'Offline';
+  document.getElementById('dlBtn').disabled = !isOnline && !hasInternet;
+  document.getElementById('ytUrl').placeholder = isOnline
+    ? 'Paste YouTube or Spotify playlist link...'
+    : hasInternet ? 'Paste YouTube or Spotify link...' : 'No internet connection';
   document.getElementById('menuSync').disabled = !isOnline;
 }
 
@@ -635,17 +810,27 @@ async function loadTracks() {
       const r = await fetch(serverUrl + '/api/tracks');
       const data = await r.json();
       tracks = data.tracks;
-      persistSave('tracks', JSON.stringify(tracks));
+      localStorage.setItem('tracks', JSON.stringify(tracks));
       if (data.sizes) {
         totalBytes = Object.values(data.sizes).reduce((a, b) => a + b, 0);
-        persistSave('librarySize', String(totalBytes));
+        localStorage.setItem('librarySize', totalBytes);
       }
     } catch (_) {}
   }
   if (!tracks.length) {
-    try { tracks = JSON.parse(await persistLoad('tracks') || '[]'); } catch (_) {}
+    try { tracks = JSON.parse(localStorage.getItem('tracks') || '[]'); } catch (_) {}
   }
-  if (!totalBytes) totalBytes = parseInt(await persistLoad('librarySize') || '0');
+
+  // Merge in any locally-stored tracks not on server (standalone downloads)
+  if (IS_NATIVE) {
+    const localFiles = await listCachedTracksNative();
+    for (const f of localFiles) {
+      if (!tracks.includes(f)) tracks.unshift(f);
+    }
+    localStorage.setItem('tracks', JSON.stringify(tracks));
+  }
+
+  if (!totalBytes) totalBytes = parseInt(localStorage.getItem('librarySize') || '0');
   updateLibraryStats(totalBytes);
   rebuildOrder();
   await updateCachedStatus();
@@ -802,7 +987,7 @@ async function deleteTrack(filename) {
   }
   // Remove from local track list
   tracks = tracks.filter(t => t !== filename);
-  persistSave('tracks', JSON.stringify(tracks));
+  localStorage.setItem('tracks', JSON.stringify(tracks));
   // Remove from all playlists
   for (const name of Object.keys(playlists)) {
     if ((playlists[name] || []).includes(filename)) {
@@ -822,7 +1007,7 @@ async function deleteTrack(filename) {
   cachedTracks.delete(filename);
   // Remove from metadata
   delete metadata[filename];
-  persistSave('metadata', JSON.stringify(metadata));
+  localStorage.setItem('metadata', JSON.stringify(metadata));
   rebuildOrder();
   renderPlaylist();
 }
@@ -873,14 +1058,7 @@ async function loadAndPlay() {
   // Load and play audio
   let src;
   if (IS_NATIVE) {
-    try {
-      const result = await getFS().readFile({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
-      const binary = atob(result.data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'audio/mpeg' });
-      src = URL.createObjectURL(blob);
-    } catch (_) {}
+    src = await getTrackUriNative(filename);
   } else {
     try {
       const cache = await caches.open('music-v5');
@@ -894,34 +1072,33 @@ async function loadAndPlay() {
 
   if (!src) src = getTrackUrl(filename);
 
-  if (!src) {
-    document.getElementById('nowPlaying').textContent = 'Error: file not found';
-    return;
-  }
   audio.src = src;
   audio.load();
-  audio.play().catch(e => {
-    document.getElementById('nowPlaying').textContent = 'Play error: ' + e.message;
-  });
+  audio.play().catch(() => {});
 
   saveState();
 }
 
 function updateMediaSession(filename) {
-  if (!('mediaSession' in navigator)) return;
   const p = parseTrack(filename);
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: p.title || p.display,
-    artist: p.artist || 'Unknown Artist',
-    album: activePlaylist || 'All Tracks'
-  });
-  navigator.mediaSession.setActionHandler('play', () => { audio.play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
-  navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
-  navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
-  navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
-  navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
-  navigator.mediaSession.setActionHandler('seekforward', (d) => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); });
+  const title = p.title || p.display;
+  const artist = p.artist || 'Unknown Artist';
+  const album = activePlaylist || 'All Tracks';
+
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album });
+    navigator.mediaSession.setActionHandler('play', () => { audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
+    navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+    navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
+    navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+    navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
+    navigator.mediaSession.setActionHandler('seekforward', (d) => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); });
+  }
+
+  if (NativeMediaSession) {
+    NativeMediaSession.updateMetadata(title, artist, album);
+  }
 }
 
 function fmt(s) {
@@ -932,7 +1109,7 @@ function fmt(s) {
 // --- Controls ---
 document.getElementById('playBtn').addEventListener('click', () => {
   ensureGain();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   if (!currentSource().length) return;
   if (!loaded) { loadAndPlay(); return; }
   if (audio.paused) {
@@ -986,7 +1163,7 @@ function saveState() {
   const source = currentSource();
   const ti = order[idx];
   const filename = source[ti] || '';
-  persistSave('playerState', JSON.stringify({
+  localStorage.setItem('playerState', JSON.stringify({
     track: filename,
     playlist: activePlaylist || '',
     position: audio.currentTime || 0,
@@ -995,9 +1172,9 @@ function saveState() {
   }));
 }
 
-async function restoreState() {
+function restoreState() {
   try {
-    const state = JSON.parse(await persistLoad('playerState'));
+    const state = JSON.parse(localStorage.getItem('playerState'));
     if (!state) return;
 
     if (state.volume != null) {
@@ -1041,14 +1218,7 @@ async function restoreState() {
         (async () => {
           let src;
           if (IS_NATIVE) {
-            try {
-              const result = await getFS().readFile({ path: MUSIC_DIR + '/' + state.track, directory: DIR_DATA });
-              const binary = atob(result.data);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              const blob = new Blob([bytes], { type: 'audio/mpeg' });
-              src = URL.createObjectURL(blob);
-            } catch (_) {}
+            src = await getTrackUriNative(state.track);
           } else {
             try {
               const cache = await caches.open('music-v5');
@@ -1074,8 +1244,15 @@ async function restoreState() {
 }
 
 audio.addEventListener('ended', () => { idx = (idx + 1) % order.length; loadAndPlay(); });
-audio.addEventListener('pause', () => { document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>'; saveState(); });
-audio.addEventListener('play', () => { document.getElementById('playIcon').innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>'; });
+audio.addEventListener('pause', () => {
+  document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
+  saveState();
+  if (NativeMediaSession) NativeMediaSession.updatePlayback(false, audio.currentTime, audio.duration || 0);
+});
+audio.addEventListener('play', () => {
+  document.getElementById('playIcon').innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>';
+  if (NativeMediaSession) NativeMediaSession.updatePlayback(true, audio.currentTime, audio.duration || 0);
+});
 window.addEventListener('beforeunload', saveState);
 let isSeeking = false;
 let pendingSeekPct = null;
@@ -1089,6 +1266,9 @@ audio.addEventListener('timeupdate', () => {
   document.getElementById('durTime').textContent = fmt(audio.duration);
   if ('mediaSession' in navigator && audio.duration) {
     navigator.mediaSession.setPositionState({ duration: audio.duration, playbackRate: audio.playbackRate, position: audio.currentTime });
+  }
+  if (NativeMediaSession && audio.duration) {
+    NativeMediaSession.updatePlayback(!audio.paused, audio.currentTime, audio.duration);
   }
   const now = Date.now();
   if (now - lastStateSave > 5000) { lastStateSave = now; saveState(); }
@@ -1139,7 +1319,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // --- Playlists ---
 async function loadPlaylists() {
-  try { playlists = JSON.parse(await persistLoad('playlists') || '{}'); } catch (_) {}
+  try { playlists = JSON.parse(localStorage.getItem('playlists') || '{}'); } catch (_) {}
 
   if (isOnline) {
     try {
@@ -1148,7 +1328,7 @@ async function loadPlaylists() {
       // Merge: server playlists override, but keep local-only ones
       const merged = { ...playlists, ...serverPl };
       playlists = merged;
-      persistSave('playlists', JSON.stringify(playlists));
+      localStorage.setItem('playlists', JSON.stringify(playlists));
       // Push any local-only playlists to server
       for (const name of Object.keys(playlists)) {
         if (!(name in serverPl)) {
@@ -1166,7 +1346,7 @@ async function loadPlaylists() {
 
 async function savePlaylist(name, trackList) {
   playlists[name] = trackList;
-  persistSave('playlists', JSON.stringify(playlists));
+  localStorage.setItem('playlists', JSON.stringify(playlists));
   if (isOnline) {
     try {
       await fetch(serverUrl + '/api/playlists', {
@@ -1181,7 +1361,7 @@ async function savePlaylist(name, trackList) {
 
 async function deletePlaylist(name) {
   delete playlists[name];
-  persistSave('playlists', JSON.stringify(playlists));
+  localStorage.setItem('playlists', JSON.stringify(playlists));
   if (isOnline) {
     try {
       await fetch(serverUrl + '/api/playlists/' + encodeURIComponent(name), { method: 'DELETE' });
@@ -1340,7 +1520,7 @@ async function renamePlaylist(oldName, newName) {
   }
   playlists[newName] = playlists[oldName];
   delete playlists[oldName];
-  persistSave('playlists', JSON.stringify(playlists));
+  localStorage.setItem('playlists', JSON.stringify(playlists));
   if (activePlaylist === oldName) activePlaylist = newName;
   if (viewingPlaylist === oldName) {
     viewingPlaylist = newName;
@@ -1586,7 +1766,8 @@ document.getElementById('ytUrl').addEventListener('keydown', (e) => { if (e.key 
 
 async function downloadYT() {
   const url = document.getElementById('ytUrl').value.trim();
-  if (!url || !isOnline) return;
+  const hasInternet = navigator.onLine !== false;
+  if (!url || (!isOnline && !hasInternet)) return;
 
   // Detect Spotify URL
   if (url.includes('spotify.com')) {
@@ -1599,43 +1780,91 @@ async function downloadYT() {
   btn.disabled = true;
   btn.textContent = 'Downloading...';
   status.className = 'dl-status';
-  status.textContent = 'Downloading from YouTube (playlists may take a while)...';
-  try {
-    const r = await fetch(serverUrl + '/api/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await r.json();
-    if (data.ok) {
-      status.className = 'dl-status success';
-      status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!`;
-      document.getElementById('ytUrl').value = '';
-      playDownloadSound();
 
-      await loadMetadata();
+  // Use server if available, otherwise download directly
+  if (isOnline) {
+    status.textContent = 'Downloading from YouTube (playlists may take a while)...';
+    try {
+      const r = await fetch(serverUrl + '/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await r.json();
+      if (data.ok) {
+        status.className = 'dl-status success';
+        status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!`;
+        document.getElementById('ytUrl').value = '';
+        playDownloadSound();
 
-      if (viewingPlaylist && data.tracks && data.tracks.length) {
-        const pl = playlists[viewingPlaylist] || [];
-        const newTracks = data.tracks.filter(t => !pl.includes(t));
-        if (newTracks.length) {
-          await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+        await loadMetadata();
+
+        if (viewingPlaylist && data.tracks && data.tracks.length) {
+          const pl = playlists[viewingPlaylist] || [];
+          const newTracks = data.tracks.filter(t => !pl.includes(t));
+          if (newTracks.length) {
+            await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+          }
         }
-      }
 
-      await loadTracks();
-      if (viewingPlaylist) renderPlaylistDetail();
-    } else {
+        await loadTracks();
+        if (viewingPlaylist) renderPlaylistDetail();
+      } else {
+        status.className = 'dl-status error';
+        status.textContent = data.error || 'Download failed';
+      }
+    } catch (e) {
       status.className = 'dl-status error';
-      status.textContent = data.error || 'Download failed';
+      status.textContent = 'Server error';
     }
-  } catch (e) {
-    status.className = 'dl-status error';
-    status.textContent = 'Server error';
+  } else {
+    status.textContent = 'Downloading directly...';
+    try {
+      const videoId = extractVideoId(url);
+      if (!videoId) throw new Error('Invalid YouTube URL');
+      if (isAlreadyDownloaded(videoId)) {
+        status.className = 'dl-status';
+        status.textContent = 'Already downloaded';
+      } else {
+        const result = await ClientYT.download(videoId);
+        status.className = 'dl-status success';
+        status.textContent = `Added: ${result.title}`;
+        document.getElementById('ytUrl').value = '';
+        playDownloadSound();
+
+        if (viewingPlaylist && result.filename) {
+          const pl = playlists[viewingPlaylist] || [];
+          if (!pl.includes(result.filename)) {
+            await savePlaylist(viewingPlaylist, [...pl, result.filename]);
+          }
+        }
+
+        rebuildOrder();
+        await updateCachedStatus();
+        renderPlaylist();
+        if (viewingPlaylist) renderPlaylistDetail();
+      }
+    } catch (e) {
+      status.className = 'dl-status error';
+      status.textContent = e.message || 'Download failed';
+    }
   }
   btn.disabled = false;
   btn.textContent = 'Add';
   setTimeout(() => { status.textContent = ''; }, 5000);
+}
+
+function extractVideoId(url) {
+  const m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/) || url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function isAlreadyDownloaded(videoId) {
+  const ytUrl = 'https://www.youtube.com/watch?v=' + videoId;
+  for (const [, info] of Object.entries(metadata)) {
+    if (info.youtube_url && info.youtube_url.includes(videoId)) return true;
+  }
+  return false;
 }
 
 const spotifyQueue = [];
@@ -1687,7 +1916,14 @@ function renderSpotifyModal() {
     for (const entry of job.logEntries) {
       const item = document.createElement('div');
       item.className = 'spotify-log-item';
-      item.innerHTML = `<span class="spotify-log-name">${entry.label}</span><span class="spotify-log-status ${entry.cls}">${entry.text}</span>`;
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'spotify-log-name';
+      nameSpan.textContent = entry.label || '';
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'spotify-log-status ' + (entry.cls || '');
+      statusSpan.textContent = entry.text || '';
+      item.appendChild(nameSpan);
+      item.appendChild(statusSpan);
       log.appendChild(item);
     }
   }
@@ -1721,38 +1957,66 @@ async function processSpotifyQueue() {
       updateSpotifyLogsBtn();
 
       try {
-        const dr = await fetch(serverUrl + '/api/download-search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: track.query })
-        });
-        const dd = await dr.json();
-        if (dd.ok) {
-          if (dd.skipped) {
-            entry.text = dd.reason ? `Skipped: ${dd.reason}` : 'Skipped (already have)';
-            entry.cls = 'log-skip';
-            job.skipped++;
+        if (isOnline) {
+          const dr = await fetch(serverUrl + '/api/download-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: track.query })
+          });
+          const dd = await dr.json();
+          if (dd.ok) {
+            if (dd.skipped) {
+              entry.text = dd.reason ? `Skipped: ${dd.reason}` : 'Skipped (already have)';
+              entry.cls = 'log-skip';
+              job.skipped++;
+            } else {
+              entry.text = '✓ Done';
+              entry.cls = 'log-done';
+              job.completed++;
+              const scrollY = window.scrollY;
+              await loadTracks();
+              window.scrollTo(0, scrollY);
+              if (viewingPlaylist && dd.tracks && dd.tracks.length) {
+                const pl = playlists[viewingPlaylist] || [];
+                const newTracks = dd.tracks.filter(t => !pl.includes(t));
+                if (newTracks.length) {
+                  await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+                }
+                renderPlaylistDetail();
+                window.scrollTo(0, scrollY);
+              }
+            }
           } else {
+            entry.text = dd.error || 'Failed';
+            entry.cls = 'log-fail';
+            job.failed++;
+          }
+        } else {
+          // Standalone: search YouTube and download first result
+          const results = await ClientYT.search(track.query);
+          if (!results.length) {
+            entry.text = 'No results found';
+            entry.cls = 'log-fail';
+            job.failed++;
+          } else {
+            const result = await ClientYT.download(results[0].id, results[0].title);
             entry.text = '✓ Done';
             entry.cls = 'log-done';
             job.completed++;
             const scrollY = window.scrollY;
-            await loadTracks();
+            rebuildOrder();
+            await updateCachedStatus();
+            renderPlaylist();
             window.scrollTo(0, scrollY);
-            if (viewingPlaylist && dd.tracks && dd.tracks.length) {
+            if (viewingPlaylist && result.filename) {
               const pl = playlists[viewingPlaylist] || [];
-              const newTracks = dd.tracks.filter(t => !pl.includes(t));
-              if (newTracks.length) {
-                await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+              if (!pl.includes(result.filename)) {
+                await savePlaylist(viewingPlaylist, [...pl, result.filename]);
               }
               renderPlaylistDetail();
               window.scrollTo(0, scrollY);
             }
           }
-        } else {
-          entry.text = dd.error || 'Failed';
-          entry.cls = 'log-fail';
-          job.failed++;
         }
       } catch (e) {
         entry.text = 'Error';
@@ -1784,12 +2048,19 @@ async function importSpotifyPlaylist(url) {
   status.textContent = 'Reading Spotify playlist...';
 
   try {
-    const r = await fetch(serverUrl + '/api/spotify-playlist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await r.json();
+    let data;
+    if (isOnline) {
+      const r = await fetch(serverUrl + '/api/spotify-playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      data = await r.json();
+    } else {
+      const m = url.match(/playlist\/([a-zA-Z0-9]+)/);
+      if (!m) throw new Error('Invalid Spotify playlist URL');
+      data = await ClientSpotify.getPlaylistTracks(m[1]);
+    }
     if (!data.tracks || !data.tracks.length) {
       status.className = 'dl-status error';
       status.textContent = data.error || 'No tracks found in playlist';
@@ -1933,29 +2204,13 @@ async function uploadFiles(files, playlistName) {
 }
 
 // --- Export All ---
-document.getElementById('menuChangeServer').addEventListener('click', async () => {
+document.getElementById('menuChangeServer').addEventListener('click', () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
-  const current = await persistLoad('serverUrl') || '';
+  const current = localStorage.getItem('serverUrl') || '';
   const url = prompt('Enter server address:', current);
   if (url && url.trim()) {
-    const cleanUrl = url.trim().replace(/\/+$/, '');
-    persistSave('serverUrl', cleanUrl);
+    localStorage.setItem('serverUrl', url.trim());
     window.location.reload();
-  }
-});
-
-document.getElementById('menuOpenFiles').addEventListener('click', async () => {
-  document.getElementById('hamburgerMenu').classList.remove('visible');
-  if (IS_NATIVE) {
-    try {
-      const result = await getFS().getUri({ path: MUSIC_DIR, directory: DIR_DATA });
-      const files = await listCachedTracksNative();
-      alert('Music folder:\n' + result.uri + '\n\n' + files.length + ' songs stored');
-    } catch (e) {
-      alert('Could not find music folder: ' + e.message);
-    }
-  } else {
-    alert('Music is stored in the browser cache.\n\n' + cachedTracks.size + '/' + tracks.length + ' tracks cached.');
   }
 });
 
@@ -1974,22 +2229,17 @@ document.getElementById('menuDeleteAll').addEventListener('click', async () => {
       viewingPlaylist = null;
       playlists = {};
       metadata = {};
-      persistSave('playlists', '{}');
-      persistSave('tracks', '[]');
-      persistSave('playerState', '{}');
-      persistSave('metadata', '{}');
-      if (IS_NATIVE) {
-        const files = await listCachedTracksNative();
-        for (const f of files) await deleteTrackNative(f);
-      } else {
-        try {
-          const cache = await caches.open('music-v5');
-          const keys = await cache.keys();
-          for (const req of keys) {
-            if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
-          }
-        } catch (_) {}
-      }
+      localStorage.removeItem('playlists');
+      localStorage.removeItem('tracks');
+      localStorage.removeItem('playerState');
+      localStorage.removeItem('metadata');
+      try {
+        const cache = await caches.open('music-v5');
+        const keys = await cache.keys();
+        for (const req of keys) {
+          if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
+        }
+      } catch (_) {}
       await loadTracks();
       await loadPlaylists();
       renderPlaylistCards();
@@ -2046,7 +2296,16 @@ async function loadDevices() {
       }).join('');
     }
   } catch (e) {
-    content.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">Could not reach server<br><span style="font-size:11px;color:#888;">${serverUrl || 'No server URL'} — ${e.message}</span></div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:#ef4444;text-align:center;padding:20px;';
+    errDiv.textContent = 'Could not reach server';
+    const errDetail = document.createElement('span');
+    errDetail.style.cssText = 'font-size:11px;color:#888;display:block;margin-top:4px;';
+    errDetail.textContent = (serverUrl || 'No server URL') + ' — ' + e.message;
+    errDiv.appendChild(document.createElement('br'));
+    errDiv.appendChild(errDetail);
+    content.innerHTML = '';
+    content.appendChild(errDiv);
   }
 }
 document.getElementById('menuViewDevices').addEventListener('click', () => {
@@ -2138,19 +2397,19 @@ async function syncTracks() {
     const trackData = await trackResp.json();
     tracks = trackData.tracks || [];
     const serverIds = trackData.ids || {};
-    persistSave('tracks', JSON.stringify(tracks));
+    localStorage.setItem('tracks', JSON.stringify(tracks));
 
     // Step 2: Get playlists from server
     showProgress('Getting playlists...', 0, 1);
     const plResp = await fetch(serverUrl + '/api/playlists', { signal: syncAbort.signal });
     playlists = await plResp.json();
-    persistSave('playlists', JSON.stringify(playlists));
+    localStorage.setItem('playlists', JSON.stringify(playlists));
 
     // Step 3: Get metadata from server
     showProgress('Getting metadata...', 0, 1);
     const metaResp = await fetch(serverUrl + '/api/metadata', { signal: syncAbort.signal });
     metadata = await metaResp.json();
-    persistSave('metadata', JSON.stringify(metadata));
+    localStorage.setItem('metadata', JSON.stringify(metadata));
 
     // Step 4: Build local ID map (filename → file size)
     showProgress('Checking local files...', 0, 1);
@@ -2217,7 +2476,7 @@ async function syncTracks() {
       const r2 = await fetch(serverUrl + '/api/tracks', { signal: syncAbort.signal });
       const d2 = await r2.json();
       tracks = d2.tracks || [];
-      persistSave('tracks', JSON.stringify(tracks));
+      localStorage.setItem('tracks', JSON.stringify(tracks));
     }
 
     // Step 6: Download missing tracks (compare by ID — file size)
@@ -2240,23 +2499,13 @@ async function syncTracks() {
       showProgress(`Downloading ${downloaded + 1}/${toDownload.length} — ${t.replace('.mp3','')}`, alreadyHave + downloaded, tracks.length);
 
       try {
-        const fetchUrl = serverUrl + '/' + encodeURI(t);
-        const resp = await fetch(fetchUrl, { signal: syncAbort.signal });
-        if (!resp.ok) {
-          failed++;
-          if (failed <= 3) showProgress(`Error ${resp.status} for ${t}`, alreadyHave + downloaded, tracks.length);
-          if (failed <= 3) await new Promise(r => setTimeout(r, 2000));
-          continue;
-        }
+        const resp = await fetch(serverUrl + '/' + encodeURI(t) + '?_sync=1', { signal: syncAbort.signal });
+        if (!resp.ok) { failed++; continue; }
         const body = await resp.arrayBuffer();
 
         if (IS_NATIVE) {
           const ok = await saveTrackNative(t, body);
-          if (ok) downloaded++; else {
-            failed++;
-            if (failed <= 3) showProgress(`Save failed: ${t} (${body.byteLength} bytes)`, alreadyHave + downloaded, tracks.length);
-            if (failed <= 3) await new Promise(r => setTimeout(r, 2000));
-          }
+          if (ok) downloaded++; else failed++;
         } else {
           const cache = await caches.open('music-v5');
           const cacheUrl = new URL('/' + encodeURI(t), location.origin).href;
@@ -2266,10 +2515,7 @@ async function syncTracks() {
       } catch (e) {
         if (syncStopped) break;
         failed++;
-        if (failed <= 3) {
-          showProgress(`Error: ${e.message}`, alreadyHave + downloaded, tracks.length);
-          await new Promise(r => setTimeout(r, 2000));
-        }
+        console.error('Download failed:', t, e);
       }
     }
 
@@ -2353,9 +2599,9 @@ startSyncPolling();
 
 // --- Download notification toggle ---
 const dlNotifToggle = document.getElementById('dlNotifToggle');
-(async () => { dlNotifToggle.checked = (await persistLoad('dlNotif')) !== 'off'; })();
+dlNotifToggle.checked = localStorage.getItem('dlNotif') !== 'off';
 dlNotifToggle.addEventListener('change', () => {
-  persistSave('dlNotif', dlNotifToggle.checked ? 'on' : 'off');
+  localStorage.setItem('dlNotif', dlNotifToggle.checked ? 'on' : 'off');
 });
 
 // --- Download sound ---
@@ -2428,7 +2674,8 @@ document.getElementById('ytSearchInput').addEventListener('keydown', (e) => {
 
 async function ytSearch() {
   const query = document.getElementById('ytSearchInput').value.trim();
-  if (!query || !isOnline) return;
+  const hasInternet = navigator.onLine !== false;
+  if (!query || (!isOnline && !hasInternet)) return;
   const results = document.getElementById('ytSearchResults');
   const btn = document.getElementById('ytSearchGoBtn');
   btn.disabled = true;
@@ -2436,30 +2683,56 @@ async function ytSearch() {
   results.innerHTML = '<div style="color:#888; font-size:13px; padding:20px 0; text-align:center;">Searching...</div>';
 
   try {
-    const r = await fetch(serverUrl + '/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
-    });
-    const data = await r.json();
-    if (data.results && data.results.length) {
-      results.innerHTML = data.results.map((item, i) => {
-        return `<div class="search-result" data-url="${item.url}" data-idx="${i}">
-          <div class="search-result-info">
-            <div class="search-result-title">${item.title}</div>
-          </div>
-          <span class="search-result-dl">⬇</span>
-        </div>`;
-      }).join('');
+    let searchResults;
+    if (isOnline) {
+      const r = await fetch(serverUrl + '/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const data = await r.json();
+      searchResults = data.results;
+    } else {
+      searchResults = await ClientYT.search(query);
+    }
 
-      results.querySelectorAll('.search-result').forEach(el => {
+    if (searchResults && searchResults.length) {
+      results.innerHTML = '';
+      searchResults.forEach((item, i) => {
+        const el = document.createElement('div');
+        el.className = 'search-result';
+        el.dataset.url = item.url || '';
+        el.dataset.id = item.id || '';
+        el.dataset.idx = i;
+        const info = document.createElement('div');
+        info.className = 'search-result-info';
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'search-result-title';
+        titleDiv.textContent = item.title || '';
+        if (item.duration) {
+          const durSpan = document.createElement('span');
+          durSpan.style.cssText = 'color:#888;font-size:11px;margin-left:6px;';
+          durSpan.textContent = item.duration;
+          titleDiv.appendChild(durSpan);
+        }
+        info.appendChild(titleDiv);
+        el.appendChild(info);
+        const dlSpan = document.createElement('span');
+        dlSpan.className = 'search-result-dl';
+        dlSpan.textContent = '⬇';
+        el.appendChild(dlSpan);
         el.addEventListener('click', () => ytSearchDownload(el));
+        results.appendChild(el);
       });
     } else {
       results.innerHTML = '<div style="color:#888; font-size:13px; padding:20px 0; text-align:center;">No results found.</div>';
     }
   } catch (e) {
-    results.innerHTML = '<div style="color:#ef4444; font-size:13px; padding:20px 0; text-align:center;">Search failed. Check server connection.</div>';
+    const errEl = document.createElement('div');
+    errEl.style.cssText = 'color:#ef4444; font-size:13px; padding:20px 0; text-align:center;';
+    errEl.textContent = e.message || 'Search failed.';
+    results.innerHTML = '';
+    results.appendChild(errEl);
   }
   btn.disabled = false;
   btn.textContent = 'Search';
@@ -2467,7 +2740,7 @@ async function ytSearch() {
 
 let dlQueueId = 0;
 
-function addToDownloadQueue(title, url) {
+function addToDownloadQueue(title, url, videoId) {
   const id = ++dlQueueId;
   const queue = document.getElementById('dlQueue');
   const item = document.createElement('div');
@@ -2483,32 +2756,53 @@ function addToDownloadQueue(title, url) {
   (async () => {
     const statusEl = item.querySelector('.dl-queue-status');
     try {
-      const r = await fetch(serverUrl + '/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
-      });
-      const data = await r.json();
-      if (data.ok) {
+      if (isOnline) {
+        const r = await fetch(serverUrl + '/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await r.json();
+        if (data.ok) {
+          statusEl.textContent = '✓ Done';
+          statusEl.className = 'dl-queue-status done';
+          playDownloadSound();
+
+          await loadMetadata();
+
+          if (viewingPlaylist && data.tracks && data.tracks.length) {
+            const pl = playlists[viewingPlaylist] || [];
+            const newTracks = data.tracks.filter(t => !pl.includes(t));
+            if (newTracks.length) {
+              await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+            }
+          }
+
+          await loadTracks();
+          if (viewingPlaylist) renderPlaylistDetail();
+        } else {
+          statusEl.textContent = data.error || 'Failed';
+          statusEl.className = 'dl-queue-status error';
+        }
+      } else {
+        const vid = videoId || extractVideoId(url);
+        if (!vid) throw new Error('Invalid URL');
+        const result = await ClientYT.download(vid, title);
         statusEl.textContent = '✓ Done';
         statusEl.className = 'dl-queue-status done';
         playDownloadSound();
 
-        await loadMetadata();
-
-        if (viewingPlaylist && data.tracks && data.tracks.length) {
+        if (viewingPlaylist && result.filename) {
           const pl = playlists[viewingPlaylist] || [];
-          const newTracks = data.tracks.filter(t => !pl.includes(t));
-          if (newTracks.length) {
-            await savePlaylist(viewingPlaylist, [...pl, ...newTracks]);
+          if (!pl.includes(result.filename)) {
+            await savePlaylist(viewingPlaylist, [...pl, result.filename]);
           }
         }
 
-        await loadTracks();
+        rebuildOrder();
+        await updateCachedStatus();
+        renderPlaylist();
         if (viewingPlaylist) renderPlaylistDetail();
-      } else {
-        statusEl.textContent = data.error || 'Failed';
-        statusEl.className = 'dl-queue-status error';
       }
     } catch (e) {
       statusEl.textContent = 'Error';
@@ -2520,21 +2814,38 @@ function addToDownloadQueue(title, url) {
 
 function ytSearchDownload(el) {
   const url = el.dataset.url;
+  const videoId = el.dataset.id || extractVideoId(url);
   const title = el.querySelector('.search-result-title').textContent;
   el.classList.add('downloading');
   el.querySelector('.search-result-dl').textContent = '✓';
-  addToDownloadQueue(title, url);
+  addToDownloadQueue(title, url, videoId);
 }
 
 // --- Init ---
 async function loadMetadata() {
-  try { metadata = JSON.parse(await persistLoad('metadata') || '{}'); } catch (_) {}
+  try { metadata = JSON.parse(localStorage.getItem('metadata') || '{}'); } catch (_) {}
   if (isOnline) {
     try {
       const r = await fetch(serverUrl + '/api/metadata');
       const serverMeta = await r.json();
       metadata = { ...metadata, ...serverMeta };
-      persistSave('metadata', JSON.stringify(metadata));
+      localStorage.setItem('metadata', JSON.stringify(metadata));
+    } catch (_) {}
+  }
+}
+
+async function checkForAppUpdate() {
+  if (!serverUrl) return;
+  // When server is available, load the latest version from it directly.
+  // Capacitor's native bridge stays active even after navigating to a server URL.
+  // The bundled version is only used when offline.
+  if (!location.href.includes(serverUrl)) {
+    try {
+      const r = await fetch(serverUrl + '/player.html', { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        window.location.href = serverUrl + '/player.html';
+        return;
+      }
     } catch (_) {}
   }
 }
@@ -2543,6 +2854,7 @@ async function init() {
   if (IS_NATIVE) await ensureMusicDir();
   setupUpdateListener();
   await updateOnlineStatus();
+  await checkForAppUpdate();
   await loadMetadata();
   await loadTracks();
   await loadPlaylists();
