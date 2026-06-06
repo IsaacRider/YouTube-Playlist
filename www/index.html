@@ -14,10 +14,6 @@
   .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
   .header h1 { font-size: 20px; font-weight: 700; }
   .header-right { display: flex; align-items: center; gap: 10px; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-  .online { background: #1db954; }
-  .offline { background: #ef4444; }
-  .status-text { font-size: 11px; color: #888; }
   .update-btn { padding: 4px 10px; border-radius: 6px; border: 1px solid #1db954; background: none; color: #1db954; font-size: 11px; font-weight: 600; cursor: pointer; display: none; }
   .update-btn:hover { background: #1db954; color: #000; }
   .update-btn.visible { display: inline-block; }
@@ -30,9 +26,6 @@
   .hamburger-menu button:hover { background: #333; color: #eee; }
   .hamburger-menu button:disabled { color: #555; cursor: not-allowed; }
   .hamburger-menu hr { border: none; border-top: 1px solid #333; margin: 4px 0; }
-  .menu-sync-info { padding: 6px 16px; font-size: 11px; color: #666; }
-  .menu-sync-bar { margin: 4px 16px 8px; height: 3px; background: #333; border-radius: 2px; overflow: hidden; }
-  .menu-sync-fill { height: 100%; background: #1db954; width: 0%; transition: width 0.3s; }
 
   /* Download box */
   .dl-section { margin-bottom: 16px; }
@@ -223,10 +216,6 @@
   <h1>Music Subscription Escape</h1>
   <div class="header-right">
     <button class="update-btn" id="updateBtn">Update Available</button>
-    <div>
-      <span class="status-dot offline" id="statusDot"></span>
-      <span class="status-text" id="statusText">Offline</span>
-    </div>
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
@@ -234,17 +223,10 @@
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
-        <button id="menuViewDevices">View Devices</button>
-        <button id="menuCheckSync">Check Sync Status</button>
-        <button id="menuSync" disabled>Sync Between Devices</button>
-        <div class="menu-sync-bar"><div class="menu-sync-fill" id="syncBar"></div></div>
-        <div class="menu-sync-info" id="syncInfo">—</div>
-        <hr>
         <button id="menuExport">Export All</button>
         <hr>
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
-        <button id="menuChangeServer">Change Server Address</button>
         <button id="menuDeleteAll" style="color:#ef4444;">Delete All Tracks</button>
       </div>
     </div>
@@ -359,42 +341,6 @@
   </div>
 </div>
 
-<!-- Sync modal (initiator) -->
-<div class="suggest-modal-overlay" id="syncModal">
-  <div class="suggest-modal">
-    <h3 id="syncModalTitle">Syncing...</h3>
-    <div style="margin:16px 0;">
-      <div class="spotify-progress-bar"><div class="spotify-progress-fill" id="syncProgressFill" style="width:0%"></div></div>
-      <div class="spotify-progress-text" id="syncProgressText" style="margin-top:6px;">Preparing...</div>
-    </div>
-    <button id="syncStopBtn" style="width:100%;padding:12px;border-radius:8px;border:none;background:#ef4444;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">Stop Sync</button>
-  </div>
-</div>
-
-<!-- Forced sync overlay (other devices) -->
-<div id="syncOverlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:100;align-items:center;justify-content:center;flex-direction:column;">
-  <div style="text-align:center;padding:30px;max-width:400px;">
-    <h2 style="font-size:20px;margin-bottom:8px;">Sync in Progress</h2>
-    <div id="syncOverlayDevice" style="font-size:13px;color:#888;margin-bottom:20px;"></div>
-    <div class="spotify-progress-bar" style="margin-bottom:8px;"><div class="spotify-progress-fill" id="syncOverlayFill" style="width:0%"></div></div>
-    <div id="syncOverlayText" style="font-size:12px;color:#888;">Waiting...</div>
-  </div>
-</div>
-
-<!-- Devices modal -->
-<div class="suggest-modal-overlay" id="devicesModal">
-  <div class="suggest-modal">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      <h3 style="margin:0;">Connected Devices</h3>
-      <button id="devicesRefreshBtn" style="background:none;border:none;color:#1db954;font-size:18px;cursor:pointer;padding:4px 8px;" title="Refresh">↻</button>
-    </div>
-    <div id="devicesContent" style="overflow-y:auto; flex:1; max-height:65vh;"></div>
-    <div style="display:flex;gap:8px;margin-top:12px;">
-      <button id="devicesLockBtn" style="flex:1;padding:10px;border-radius:8px;border:none;font-weight:700;font-size:13px;cursor:pointer;background:#ef4444;color:#fff;">Lock to Current Devices</button>
-      <button class="modal-close" id="devicesModalClose" style="flex:1;">Close</button>
-    </div>
-  </div>
-</div>
 
 <div class="copied-toast" id="copiedToast">YouTube link copied!</div>
 
@@ -481,7 +427,7 @@ let shuffleOn = false;
 let loaded = false;
 let currentFilename = null;
 let serverUrl = '';
-let isOnline = false;
+let isOnline = false;  // true when Mac server is reachable (used transparently for faster downloads)
 let cachedTracks = new Set();
 let playlists = {};
 let metadata = {};
@@ -831,16 +777,12 @@ const ClientSpotify = {
   }
 };
 
-// --- Server detection ---
+// --- Server detection (silent background) ---
 async function detectServer() {
   const origins = [];
   const saved = localStorage.getItem('serverUrl');
   if (saved) origins.push(saved);
-  // Only try location.origin if it looks like a real server (not capacitor/localhost)
-  if (!IS_NATIVE) {
-    origins.push(location.origin);
-  }
-
+  if (!IS_NATIVE) origins.push(location.origin);
   for (const origin of origins) {
     try {
       const r = await fetch(origin + '/api/tracks', { signal: AbortSignal.timeout(3000) });
@@ -854,39 +796,15 @@ async function detectServer() {
       }
     } catch (_) {}
   }
-
-  // Only prompt if no saved URL and no internet (user probably wants to connect)
-  // Skip prompting when internet is available — standalone mode works fine
-  if (!serverUrl && !navigator.onLine) {
-    const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)', saved || '');
-    if (url) {
-      const cleanUrl = url.trim().replace(/\/+$/, '');
-      try {
-        const r = await fetch(cleanUrl + '/api/tracks', { signal: AbortSignal.timeout(5000) });
-        if (r.ok) {
-          const data = await r.json();
-          if (data.tracks) {
-            serverUrl = cleanUrl;
-            localStorage.setItem('serverUrl', cleanUrl);
-            return true;
-          }
-        }
-      } catch (_) {}
-    }
-  }
   return false;
 }
 
 async function updateOnlineStatus() {
   isOnline = await detectServer();
   const hasInternet = navigator.onLine !== false;
-  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : hasInternet ? 'online' : 'offline');
-  document.getElementById('statusText').textContent = isOnline ? 'Server' : hasInternet ? 'Standalone' : 'Offline';
-  document.getElementById('dlBtn').disabled = !isOnline && !hasInternet;
-  document.getElementById('ytUrl').placeholder = isOnline
-    ? 'Paste YouTube or Spotify playlist link...'
-    : hasInternet ? 'Paste YouTube or Spotify link...' : 'No internet connection';
-  document.getElementById('menuSync').disabled = !isOnline;
+  document.getElementById('dlBtn').disabled = !hasInternet;
+  document.getElementById('ytUrl').placeholder = hasInternet
+    ? 'Paste YouTube or Spotify link...' : 'No internet connection';
 }
 
 // --- Track loading ---
@@ -971,7 +889,7 @@ async function updateCachedStatus() {
       }
     } catch (_) {}
   }
-  document.getElementById('syncInfo').textContent = `${cachedTracks.size}/${tracks.length} cached`;
+  // cachedTracks count available for internal use
 }
 
 function parseTrack(t) {
@@ -2357,17 +2275,6 @@ async function uploadFiles(files, playlistName) {
   setTimeout(() => { status.textContent = ''; }, 5000);
 }
 
-// --- Export All ---
-document.getElementById('menuChangeServer').addEventListener('click', () => {
-  document.getElementById('hamburgerMenu').classList.remove('visible');
-  const current = localStorage.getItem('serverUrl') || '';
-  const url = prompt('Enter server address:', current);
-  if (url && url.trim()) {
-    localStorage.setItem('serverUrl', url.trim());
-    window.location.reload();
-  }
-});
-
 document.getElementById('menuDeleteAll').addEventListener('click', async () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
   if (!confirm('Delete ALL tracks, playlists, and metadata? This cannot be undone.')) return;
@@ -2415,341 +2322,8 @@ document.getElementById('menuExport').addEventListener('click', () => {
   }, 2000);
 });
 
-// --- Check Sync Status ---
-// --- View Devices ---
-async function loadDevices() {
-  const content = document.getElementById('devicesContent');
-  const lockBtn = document.getElementById('devicesLockBtn');
-  content.innerHTML = '<div style="color:#888;text-align:center;padding:20px;">Loading...</div>';
-  try {
-    const r = await fetch(serverUrl + '/api/devices');
-    const data = await r.json();
-    const devices = data.devices || [];
-    const locked = data.locked || false;
-    lockBtn.textContent = locked ? 'Unlock Devices' : 'Lock to Current Devices';
-    lockBtn.style.background = locked ? '#1db954' : '#ef4444';
-    if (!devices.length) {
-      content.innerHTML = '<div style="color:#888;text-align:center;padding:20px;">No devices connected</div>';
-    } else {
-      const totalTracks = tracks.length;
-      content.innerHTML = devices.map(d => {
-        const ago = d.ago < 10 ? 'just now' : d.ago < 60 ? `${d.ago}s ago` : `${Math.floor(d.ago/60)}m ago`;
-        const cached = d.cached || 0;
-        const pct = totalTracks > 0 ? Math.round((cached / totalTracks) * 100) : 0;
-        const syncStatus = cached >= totalTracks && totalTracks > 0
-          ? '<span style="color:#1db954;font-weight:600;">Fully synced ✓</span>'
-          : `<span style="color:#f59e0b;">${cached}/${totalTracks} songs (${pct}%)</span>`;
-        return `<div style="padding:10px 0;border-bottom:1px solid #333;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div><div style="font-weight:600;font-size:14px;">${d.name}</div><div style="font-size:11px;color:#888;">${d.ip}</div></div>
-            <div style="font-size:11px;color:#1db954;">${ago}</div>
-          </div>
-          <div style="font-size:12px;margin-top:4px;">${syncStatus}</div>
-          <div style="height:3px;background:#333;border-radius:2px;margin-top:4px;overflow:hidden;"><div style="height:100%;background:${pct >= 100 ? '#1db954' : '#f59e0b'};width:${pct}%;transition:width 0.3s;"></div></div>
-        </div>`;
-      }).join('');
-    }
-  } catch (e) {
-    const errDiv = document.createElement('div');
-    errDiv.style.cssText = 'color:#ef4444;text-align:center;padding:20px;';
-    errDiv.textContent = 'Could not reach server';
-    const errDetail = document.createElement('span');
-    errDetail.style.cssText = 'font-size:11px;color:#888;display:block;margin-top:4px;';
-    errDetail.textContent = (serverUrl || 'No server URL') + ' — ' + e.message;
-    errDiv.appendChild(document.createElement('br'));
-    errDiv.appendChild(errDetail);
-    content.innerHTML = '';
-    content.appendChild(errDiv);
-  }
-}
-document.getElementById('menuViewDevices').addEventListener('click', () => {
-  document.getElementById('devicesModal').classList.add('visible');
-  document.getElementById('hamburgerMenu').classList.remove('visible');
-  loadDevices();
-});
-document.getElementById('devicesRefreshBtn').addEventListener('click', loadDevices);
-document.getElementById('devicesLockBtn').addEventListener('click', async () => {
-  try {
-    await fetch(serverUrl + '/api/devices/lock', { method: 'POST' });
-    loadDevices();
-  } catch (_) {}
-});
-document.getElementById('devicesModalClose').addEventListener('click', () => {
-  document.getElementById('devicesModal').classList.remove('visible');
-});
-document.getElementById('devicesModal').addEventListener('click', (e) => {
-  if (e.target === document.getElementById('devicesModal'))
-    document.getElementById('devicesModal').classList.remove('visible');
-});
+// (Sync/devices UI removed — app runs standalone)
 
-document.getElementById('menuCheckSync').addEventListener('click', async () => {
-  const info = document.getElementById('syncInfo');
-  const bar = document.getElementById('syncBar');
-  info.textContent = 'Checking...';
-  await updateCachedStatus();
-  const total = tracks.length;
-  const cached = cachedTracks.size;
-  const pct = total > 0 ? Math.round((cached / total) * 100) : 0;
-  bar.style.width = pct + '%';
-  if (cached === total && total > 0) {
-    info.textContent = `All ${total} tracks synced ✓`;
-  } else {
-    info.textContent = `${cached}/${total} cached — ${total - cached} missing`;
-  }
-});
-
-// --- Sync ---
-let syncStopped = false;
-let syncAbort = null;
-
-document.getElementById('menuSync').addEventListener('click', () => {
-  document.getElementById('hamburgerMenu').classList.remove('visible');
-  syncTracks();
-});
-
-document.getElementById('syncStopBtn').addEventListener('click', () => {
-  syncStopped = true;
-  if (syncAbort) syncAbort.abort();
-});
-
-async function syncTracks() {
-  if (!serverUrl) { alert('Connect to server first'); return; }
-  syncStopped = false;
-  syncAbort = new AbortController();
-
-  const modal = document.getElementById('syncModal');
-  const fill = document.getElementById('syncProgressFill');
-  const text = document.getElementById('syncProgressText');
-  const title = document.getElementById('syncModalTitle');
-  modal.classList.add('visible');
-  fill.style.width = '0%';
-  title.textContent = 'Syncing...';
-
-  let lastReport = 0;
-  function showProgress(msg, done, total) {
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    fill.style.width = pct + '%';
-    text.textContent = msg;
-    const now = Date.now();
-    if (now - lastReport < 2000) return;
-    lastReport = now;
-    fetch(serverUrl + '/api/sync-progress', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phase: msg, progress: done, total })
-    }).catch(() => {});
-  }
-
-  fetch(serverUrl + '/api/sync-start', { method: 'POST' }).catch(() => {});
-
-  try {
-    if (IS_NATIVE) await ensureMusicDir();
-
-    // Step 1: Get server track list with IDs (file sizes)
-    showProgress('Getting track list...', 0, 1);
-    const trackResp = await fetch(serverUrl + '/api/tracks', { signal: syncAbort.signal });
-    const trackData = await trackResp.json();
-    tracks = trackData.tracks || [];
-    const serverIds = trackData.ids || {};
-    localStorage.setItem('tracks', JSON.stringify(tracks));
-
-    // Step 2: Get playlists from server
-    showProgress('Getting playlists...', 0, 1);
-    const plResp = await fetch(serverUrl + '/api/playlists', { signal: syncAbort.signal });
-    playlists = await plResp.json();
-    localStorage.setItem('playlists', JSON.stringify(playlists));
-
-    // Step 3: Get metadata from server
-    showProgress('Getting metadata...', 0, 1);
-    const metaResp = await fetch(serverUrl + '/api/metadata', { signal: syncAbort.signal });
-    metadata = await metaResp.json();
-    localStorage.setItem('metadata', JSON.stringify(metadata));
-
-    // Step 4: Build local ID map (filename → file size)
-    showProgress('Checking local files...', 0, 1);
-    const localIds = {};
-    if (IS_NATIVE) {
-      const existing = await listCachedTracksNative();
-      for (const f of existing) {
-        const size = await getTrackSizeNative(f);
-        if (size > 0) localIds[f] = String(size);
-      }
-    } else {
-      try {
-        const cache = await caches.open('music-v5');
-        const keys = await cache.keys();
-        for (const req of keys) {
-          const u = new URL(req.url);
-          if (u.pathname.endsWith('.mp3')) {
-            const name = decodeURIComponent(u.pathname.split('/').pop());
-            const resp = await cache.match(req);
-            if (resp) {
-              const buf = await resp.arrayBuffer();
-              localIds[name] = String(buf.byteLength);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Step 5: Upload local-only tracks to server
-    const localOnly = Object.keys(localIds).filter(f => !serverIds[f]);
-    let uploaded = 0;
-    for (let i = 0; i < localOnly.length && !syncStopped; i++) {
-      showProgress(`Uploading ${i + 1}/${localOnly.length} — ${localOnly[i].replace('.mp3','')}`, i, localOnly.length);
-      try {
-        if (IS_NATIVE) {
-          const result = await getFS().readFile({ path: MUSIC_DIR + '/' + localOnly[i], directory: DIR_DATA });
-          const binary = atob(result.data);
-          const bytes = new Uint8Array(binary.length);
-          for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
-          const blob = new Blob([bytes], { type: 'audio/mpeg' });
-          const form = new FormData();
-          form.append('file', blob, localOnly[i]);
-          await fetch(serverUrl + '/api/upload', { method: 'POST', body: form, signal: syncAbort.signal });
-          uploaded++;
-        } else {
-          const cache = await caches.open('music-v5');
-          const cached = await cache.match('/' + encodeURI(localOnly[i]));
-          if (cached) {
-            const blob = await cached.blob();
-            const form = new FormData();
-            form.append('file', blob, localOnly[i]);
-            await fetch(serverUrl + '/api/upload', { method: 'POST', body: form, signal: syncAbort.signal });
-            uploaded++;
-          }
-        }
-      } catch (e) {
-        if (syncStopped) break;
-        console.error('Upload failed:', localOnly[i], e);
-      }
-    }
-
-    // Refresh track list if we uploaded anything
-    if (uploaded > 0 && !syncStopped) {
-      const r2 = await fetch(serverUrl + '/api/tracks', { signal: syncAbort.signal });
-      const d2 = await r2.json();
-      tracks = d2.tracks || [];
-      localStorage.setItem('tracks', JSON.stringify(tracks));
-    }
-
-    // Step 6: Download missing tracks (compare by ID — file size)
-    const toDownload = tracks.filter(t => {
-      const serverId = serverIds[t];
-      const localId = localIds[t];
-      return !localId || localId !== serverId;
-    });
-    const alreadyHave = tracks.length - toDownload.length;
-    let downloaded = 0;
-    let failed = 0;
-
-    if (toDownload.length === 0 && !syncStopped) {
-      showProgress(`All ${tracks.length} tracks matched ✓`, 1, 1);
-    }
-
-    for (let i = 0; i < toDownload.length; i++) {
-      if (syncStopped) break;
-      const t = toDownload[i];
-      showProgress(`Downloading ${downloaded + 1}/${toDownload.length} — ${t.replace('.mp3','')}`, alreadyHave + downloaded, tracks.length);
-
-      try {
-        const resp = await fetch(serverUrl + '/' + encodeURI(t) + '?_sync=1', { signal: syncAbort.signal });
-        if (!resp.ok) { failed++; continue; }
-        const body = await resp.arrayBuffer();
-
-        if (IS_NATIVE) {
-          const ok = await saveTrackNative(t, body);
-          if (ok) downloaded++; else failed++;
-        } else {
-          const cache = await caches.open('music-v5');
-          const cacheUrl = new URL('/' + encodeURI(t), location.origin).href;
-          await cache.put(new Request(cacheUrl), new Response(body, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } }));
-          downloaded++;
-        }
-      } catch (e) {
-        if (syncStopped) break;
-        failed++;
-        console.error('Download failed:', t, e);
-      }
-    }
-
-    // Done
-    fetch(serverUrl + '/api/sync-stop', { method: 'POST' }).catch(() => {});
-    await updateCachedStatus();
-    fill.style.width = '100%';
-    if (syncStopped) {
-      title.textContent = 'Sync Stopped';
-      text.textContent = `Uploaded ${uploaded}, downloaded ${downloaded} before stopping.`;
-    } else {
-      title.textContent = 'Sync Complete';
-      const total = cachedTracks.size;
-      const parts = [];
-      if (uploaded > 0) parts.push(`${uploaded} uploaded`);
-      if (downloaded > 0) parts.push(`${downloaded} downloaded`);
-      if (failed > 0) parts.push(`${failed} failed`);
-      if (parts.length === 0) parts.push('everything in sync');
-      text.textContent = `${total}/${tracks.length} tracks — ${parts.join(', ')} ✓`;
-    }
-
-  } catch (e) {
-    fetch(serverUrl + '/api/sync-stop', { method: 'POST' }).catch(() => {});
-    if (!syncStopped) {
-      title.textContent = 'Sync Failed';
-      text.textContent = 'Could not reach server: ' + e.message;
-    }
-  }
-
-  document.getElementById('syncStopBtn').textContent = 'Close';
-  document.getElementById('syncStopBtn').style.background = '#333';
-  document.getElementById('syncStopBtn').onclick = () => {
-    modal.classList.remove('visible');
-    document.getElementById('syncStopBtn').textContent = 'Stop Sync';
-    document.getElementById('syncStopBtn').style.background = '#ef4444';
-    document.getElementById('syncStopBtn').onclick = () => {
-      syncStopped = true;
-      if (syncAbort) syncAbort.abort();
-    };
-  };
-  renderPlaylist();
-}
-
-// --- Sync polling (other devices) ---
-let syncPollInterval = null;
-function startSyncPolling() {
-  if (syncPollInterval) return;
-  syncPollInterval = setInterval(async () => {
-    if (!isOnline || !serverUrl) return;
-    try {
-      // Report our cached count to server
-      fetch(serverUrl + '/api/device-status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cached: cachedTracks.size })
-      }).catch(() => {});
-      const r = await fetch(serverUrl + '/api/sync-status');
-      const state = await r.json();
-      const overlay = document.getElementById('syncOverlay');
-      if (state.active && state.initiator !== null) {
-        // Check if we are the initiator — don't show overlay on our own device
-        const syncModal = document.getElementById('syncModal');
-        if (syncModal.classList.contains('visible')) return;
-        overlay.style.display = 'flex';
-        const pct = state.total > 0 ? Math.round((state.progress / state.total) * 100) : 0;
-        document.getElementById('syncOverlayFill').style.width = pct + '%';
-        document.getElementById('syncOverlayText').textContent = state.phase || 'Syncing...';
-        document.getElementById('syncOverlayDevice').textContent = `${state.device} is syncing all devices`;
-      } else {
-        if (overlay.style.display === 'flex') {
-          overlay.style.display = 'none';
-          await loadTracks();
-          await updateCachedStatus();
-          renderPlaylist();
-        }
-      }
-    } catch (_) {}
-  }, 2000);
-}
-startSyncPolling();
 
 // --- Download notification toggle ---
 const dlNotifToggle = document.getElementById('dlNotifToggle');
@@ -3013,7 +2587,6 @@ async function init() {
   await loadTracks();
   await loadPlaylists();
   restoreState();
-  setInterval(updateOnlineStatus, 15000);
 }
 
 init();
