@@ -244,6 +244,7 @@
         <hr>
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
+        <button id="menuChangeServer">Change Server Address</button>
         <button id="menuDeleteAll" style="color:#ef4444;">Delete All Tracks</button>
       </div>
     </div>
@@ -533,31 +534,41 @@ document.getElementById('updateBtn').addEventListener('click', () => {
 // --- Server detection ---
 async function detectServer() {
   const origins = [];
-  if (!IS_NATIVE) origins.push(location.origin);
   const saved = localStorage.getItem('serverUrl');
   if (saved) origins.push(saved);
+  // Only try location.origin if it looks like a real server (not capacitor/localhost)
+  if (!location.origin.includes('localhost') && !location.origin.includes('capacitor')) {
+    origins.push(location.origin);
+  }
 
   for (const origin of origins) {
     try {
       const r = await fetch(origin + '/api/tracks', { signal: AbortSignal.timeout(3000) });
       if (r.ok) {
-        serverUrl = origin;
-        localStorage.setItem('serverUrl', origin);
-        return true;
+        const data = await r.json();
+        if (data.tracks) {
+          serverUrl = origin;
+          localStorage.setItem('serverUrl', origin);
+          return true;
+        }
       }
     } catch (_) {}
   }
 
-  // For native app — prompt for server URL if not found
-  if (IS_NATIVE && !serverUrl) {
-    const url = prompt('Enter server address (e.g. http://192.168.1.100:8000)');
+  // Prompt for server URL if not found
+  if (!serverUrl) {
+    const url = prompt('Enter server address (e.g. http://192.168.1.100:8888)');
     if (url) {
+      const cleanUrl = url.trim().replace(/\/+$/, '');
       try {
-        const r = await fetch(url + '/api/tracks', { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(cleanUrl + '/api/tracks', { signal: AbortSignal.timeout(5000) });
         if (r.ok) {
-          serverUrl = url;
-          localStorage.setItem('serverUrl', url);
-          return true;
+          const data = await r.json();
+          if (data.tracks) {
+            serverUrl = cleanUrl;
+            localStorage.setItem('serverUrl', cleanUrl);
+            return true;
+          }
         }
       } catch (_) {}
     }
@@ -1859,6 +1870,16 @@ async function uploadFiles(files, playlistName) {
 }
 
 // --- Export All ---
+document.getElementById('menuChangeServer').addEventListener('click', () => {
+  document.getElementById('hamburgerMenu').classList.remove('visible');
+  const current = localStorage.getItem('serverUrl') || '';
+  const url = prompt('Enter server address:', current);
+  if (url && url.trim()) {
+    localStorage.setItem('serverUrl', url.trim());
+    window.location.reload();
+  }
+});
+
 document.getElementById('menuDeleteAll').addEventListener('click', async () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
   if (!confirm('Delete ALL tracks, playlists, and metadata? This cannot be undone.')) return;
@@ -1933,7 +1954,7 @@ async function loadDevices() {
       }).join('');
     }
   } catch (e) {
-    content.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px;">Could not reach server</div>';
+    content.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">Could not reach server<br><span style="font-size:11px;color:#888;">${serverUrl || 'No server URL'} — ${e.message}</span></div>`;
   }
 }
 document.getElementById('menuViewDevices').addEventListener('click', () => {
@@ -2380,10 +2401,27 @@ async function loadMetadata() {
   }
 }
 
+async function checkForAppUpdate() {
+  if (!serverUrl) return;
+  // When server is available, load the latest version from it directly.
+  // Capacitor's native bridge stays active even after navigating to a server URL.
+  // The bundled version is only used when offline.
+  if (!location.href.includes(serverUrl)) {
+    try {
+      const r = await fetch(serverUrl + '/player.html', { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        window.location.href = serverUrl + '/player.html';
+        return;
+      }
+    } catch (_) {}
+  }
+}
+
 async function init() {
   if (IS_NATIVE) await ensureMusicDir();
   setupUpdateListener();
   await updateOnlineStatus();
+  await checkForAppUpdate();
   await loadMetadata();
   await loadTracks();
   await loadPlaylists();
