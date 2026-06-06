@@ -90,6 +90,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def _read_json(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length == 0:
+                return {}
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
     def _register_device(self):
         global allowed_devices
         ip = self.client_address[0]
@@ -215,8 +224,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ip = self.client_address[0]
             if ip == '127.0.0.1' or ip == '::1':
                 ip = get_local_ip()
-            length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length))
+            body = self._read_json()
+            if body is None:
+                self._json(400, {'error': 'Invalid JSON'})
+                return
             if ip in connected_devices:
                 connected_devices[ip]['cached'] = body.get('cached', 0)
             self._json(200, {'ok': True})
@@ -231,8 +242,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(200, {'ok': True})
             return
         elif self.path == '/api/sync-progress':
-            length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length))
+            body = self._read_json()
+            if body is None:
+                self._json(400, {'error': 'Invalid JSON'})
+                return
             sync_state['progress'] = body.get('progress', 0)
             sync_state['total'] = body.get('total', 0)
             sync_state['phase'] = body.get('phase', '')
@@ -244,8 +257,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(200, {'ok': True})
             return
         elif self.path == '/api/playlists':
-            length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length))
+            body = self._read_json()
+            if body is None:
+                self._json(400, {'error': 'Invalid JSON'})
+                return
             name = body.get('name', '').strip()
             tracks_list = body.get('tracks', [])
             if not name:
@@ -273,8 +288,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_search(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         query = body.get('query', '').strip()
         if not query:
             self._json(400, {'error': 'Search query required'})
@@ -314,8 +331,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(500, {'error': 'yt-dlp not found'})
 
     def _handle_spotify_playlist(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         url = body.get('url', '').strip()
         if not url or 'spotify.com' not in url:
             self._json(400, {'error': 'Invalid Spotify URL'})
@@ -440,8 +459,10 @@ except Exception as e:
         self._json(200, {'tracks': tracks, 'name': playlist_name or f'Spotify ({len(tracks)} tracks)'})
 
     def _handle_download_search(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         query = body.get('query', '').strip()
         if not query:
             self._json(400, {'error': 'Search query required'})
@@ -525,8 +546,10 @@ except Exception as e:
             self._json(500, {'error': 'yt-dlp not found'})
 
     def _handle_download(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         url = body.get('url', '').strip()
         if not url or ('youtube' not in url and 'youtu.be' not in url):
             self._json(400, {'error': 'Invalid YouTube URL'})
@@ -632,8 +655,10 @@ except Exception as e:
             self._json(500, {'error': 'yt-dlp not found. Install via: brew install yt-dlp'})
 
     def _handle_rename_playlist(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         old_name = body.get('old_name', '').strip()
         new_name = body.get('new_name', '').strip()
         if not old_name or not new_name:
@@ -652,8 +677,10 @@ except Exception as e:
         self._json(200, {'ok': True})
 
     def _handle_suggest_playlists(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json()
+        if body is None:
+            self._json(400, {'error': 'Invalid JSON'})
+            return
         track_names = body.get('tracks', [])
         if not track_names:
             self._json(400, {'error': 'No tracks provided'})

@@ -550,7 +550,7 @@ const PERSIST_KEYS = ['tracks', 'playlists', 'playerState', 'metadata', 'dlNotif
 async function persistSave(key, value) {
   localStorage.setItem(key, value);
   if (IS_NATIVE && PERSIST_KEYS.includes(key)) {
-    saveSettingNative(key, value);
+    await saveSettingNative(key, value);
   }
 }
 
@@ -851,6 +851,7 @@ async function loadAndPlay() {
 
   // Stop current playback cleanly
   audio.pause();
+  if (audio.src && audio.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
   pendingSeekPct = null;
   isSeeking = false;
 

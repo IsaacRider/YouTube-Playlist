@@ -840,6 +840,7 @@ async function loadAndPlay() {
 
   // Stop current playback cleanly
   audio.pause();
+  if (audio.src && audio.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
   pendingSeekPct = null;
   isSeeking = false;
 
