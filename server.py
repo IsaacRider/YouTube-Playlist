@@ -126,12 +126,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             mp3s = [f for f in os.listdir(DIR) if f.endswith('.mp3')]
             files = sorted(mp3s, key=lambda f: os.path.getmtime(os.path.join(DIR, f)), reverse=True)
             sizes = {}
+            ids = {}
             for f in files:
                 try:
-                    sizes[f] = os.path.getsize(os.path.join(DIR, f))
+                    sz = os.path.getsize(os.path.join(DIR, f))
+                    sizes[f] = sz
+                    ids[f] = str(sz)
                 except OSError:
                     sizes[f] = 0
-            self._json(200, {'tracks': files, 'sizes': sizes})
+                    ids[f] = '0'
+            self._json(200, {'tracks': files, 'sizes': sizes, 'ids': ids})
         elif self.path == '/api/playlists':
             self._json(200, load_playlists())
         elif self.path == '/api/metadata':
