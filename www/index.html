@@ -873,7 +873,14 @@ async function loadAndPlay() {
   // Load and play audio
   let src;
   if (IS_NATIVE) {
-    src = await getTrackUriNative(filename);
+    try {
+      const result = await getFS().readFile({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+      const binary = atob(result.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'audio/mpeg' });
+      src = URL.createObjectURL(blob);
+    } catch (_) {}
   } else {
     try {
       const cache = await caches.open('music-v5');
@@ -1034,7 +1041,14 @@ async function restoreState() {
         (async () => {
           let src;
           if (IS_NATIVE) {
-            src = await getTrackUriNative(state.track);
+            try {
+              const result = await getFS().readFile({ path: MUSIC_DIR + '/' + state.track, directory: DIR_DATA });
+              const binary = atob(result.data);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              const blob = new Blob([bytes], { type: 'audio/mpeg' });
+              src = URL.createObjectURL(blob);
+            } catch (_) {}
           } else {
             try {
               const cache = await caches.open('music-v5');
