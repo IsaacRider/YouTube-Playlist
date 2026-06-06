@@ -1,4 +1,7 @@
 *.mp3
 filelist.txt
+playlists.json
+metadata.json
 __pycache__/
+.venv/
 .DS_Store

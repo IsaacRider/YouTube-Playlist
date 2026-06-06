@@ -1,6 +1,6 @@
 {
-  "name": "Music Player",
-  "short_name": "Music",
+  "name": "Music Subscription Escape",
+  "short_name": "MSE",
   "start_url": "/player.html",
   "display": "standalone",
   "background_color": "#111111",
