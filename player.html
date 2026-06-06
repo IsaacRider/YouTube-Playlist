@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json">
+<title>Music Player</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; min-height: 100vh; padding: 16px; padding-bottom: 100px; -webkit-user-select: none; user-select: none; }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .header h1 { font-size: 20px; font-weight: 700; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .online { background: #1db954; }
+  .offline { background: #ef4444; }
+  .status-text { font-size: 11px; color: #888; }
+
+  /* Download box */
+  .dl-section { margin-bottom: 16px; }
+  .dl-row { display: flex; gap: 8px; }
+  .dl-row input { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #1a1a1a; color: #eee; font-size: 14px; outline: none; }
+  .dl-row input:focus { border-color: #1db954; }
+  .dl-row button { padding: 10px 16px; border-radius: 10px; border: none; background: #1db954; color: #000; font-weight: 700; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .dl-row button:disabled { background: #333; color: #666; }
+  .dl-status { font-size: 12px; color: #888; margin-top: 6px; min-height: 18px; }
+  .dl-status.error { color: #ef4444; }
+  .dl-status.success { color: #1db954; }
+
+  /* Sync bar */
+  .sync-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .sync-btn { padding: 8px 14px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #aaa; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .sync-btn:hover { background: #222; color: #eee; }
+  .sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .sync-info { font-size: 11px; color: #666; }
+  .sync-progress { height: 3px; background: #222; border-radius: 2px; flex: 1; overflow: hidden; }
+  .sync-progress-bar { height: 100%; background: #1db954; width: 0%; transition: width 0.3s; }
+
+  /* Playlist */
+  .playlist { overflow-y: auto; }
+  .track { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #bbb; display: flex; align-items: center; gap: 8px; }
+  .track:hover { background: #1a1a1a; }
+  .track.active { background: #1db954; color: #000; }
+  .track-num { color: #555; font-size: 11px; min-width: 24px; }
+  .active .track-num { color: #000; }
+  .track-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track-cached { font-size: 9px; color: #1db954; }
+  .active .track-cached { color: #000; }
+
+  /* Fixed bottom player */
+  .bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: #181818; border-top: 1px solid #282828; padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom)); z-index: 10; }
+  .bp-title { font-size: 13px; font-weight: 600; text-align: center; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-progress { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 10px; color: #888; }
+  .bp-progress input[type=range] { flex: 1; accent-color: #1db954; height: 4px; }
+  .bp-controls { display: flex; align-items: center; justify-content: center; gap: 20px; }
+  .bp-controls button { background: none; border: none; color: #eee; font-size: 22px; cursor: pointer; padding: 6px; }
+  .bp-play { font-size: 32px !important; background: #1db954 !important; width: 48px; height: 48px; border-radius: 50% !important; display: flex; align-items: center; justify-content: center; }
+  .bp-vol { display: flex; align-items: center; gap: 6px; justify-content: center; margin-top: 6px; font-size: 10px; color: #666; }
+  .bp-vol input { width: 80px; accent-color: #1db954; }
+  .shuffle-badge { font-size: 11px; padding: 4px 10px; border-radius: 12px; cursor: pointer; }
+  .shuffle-on { background: #1db954; color: #000; font-weight: 700; }
+  .shuffle-off { background: #333; color: #888; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Music Player</h1>
+  <div>
+    <span class="status-dot offline" id="statusDot"></span>
+    <span class="status-text" id="statusText">Offline</span>
+  </div>
+</div>
+
+<div class="dl-section" id="dlSection" style="display:none;">
+  <div class="dl-row">
+    <input type="text" id="ytUrl" placeholder="Paste YouTube link (video or playlist)...">
+    <button id="dlBtn">Add</button>
+  </div>
+  <div class="dl-status" id="dlStatus"></div>
+</div>
+
+<div class="sync-bar">
+  <button class="sync-btn" id="syncBtn" disabled>Sync</button>
+  <div class="sync-progress"><div class="sync-progress-bar" id="syncBar"></div></div>
+  <span class="sync-info" id="syncInfo">—</span>
+</div>
+
+<div class="playlist" id="playlist"></div>
+
+<div class="bottom-player">
+  <div class="bp-title" id="nowPlaying">Tap a track to play</div>
+  <div class="bp-progress">
+    <span id="curTime">0:00</span>
+    <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
+    <span id="durTime">0:00</span>
+  </div>
+  <div class="bp-controls">
+    <button id="prevBtn">⏮</button>
+    <button class="bp-play" id="playBtn">▶</button>
+    <button id="nextBtn">⏭</button>
+    <span class="shuffle-badge shuffle-off" id="shuffleBtn">Shuffle</span>
+  </div>
+  <div class="bp-vol">
+    <span>🔈</span>
+    <input type="range" id="volume" min="0" max="100" value="80">
+    <span>🔊</span>
+  </div>
+</div>
+
+<script>
+const CACHE_NAME = 'music-v1';
+const audio = new Audio();
+audio.volume = 0.8;
+
+let tracks = [];
+let order = [];
+let idx = 0;
+let shuffleOn = false;
+let loaded = false;
+let serverUrl = '';
+let isOnline = false;
+let cachedTracks = new Set();
+
+// --- Server detection ---
+async function detectServer() {
+  // Try current origin first (when opened from server)
+  const origins = [location.origin];
+  // Also try saved server
+  const saved = localStorage.getItem('serverUrl');
+  if (saved && saved !== location.origin) origins.push(saved);
+
+  for (const origin of origins) {
+    try {
+      const r = await fetch(origin + '/api/tracks', { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        serverUrl = origin;
+        localStorage.setItem('serverUrl', origin);
+        return true;
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
+async function updateOnlineStatus() {
+  isOnline = await detectServer();
+  document.getElementById('statusDot').className = 'status-dot ' + (isOnline ? 'online' : 'offline');
+  document.getElementById('statusText').textContent = isOnline ? 'Connected' : 'Offline';
+  document.getElementById('dlSection').style.display = isOnline ? 'block' : 'none';
+  document.getElementById('syncBtn').disabled = !isOnline;
+}
+
+// --- Track loading ---
+async function loadTracks() {
+  // Try server first
+  if (isOnline) {
+    try {
+      const r = await fetch(serverUrl + '/api/tracks');
+      const data = await r.json();
+      tracks = data.tracks;
+      localStorage.setItem('tracks', JSON.stringify(tracks));
+    } catch (_) {}
+  }
+  // Fall back to saved list
+  if (!tracks.length) {
+    try { tracks = JSON.parse(localStorage.getItem('tracks') || '[]'); } catch (_) {}
+  }
+  order = tracks.map((_, i) => i);
+  await updateCachedStatus();
+  renderPlaylist();
+}
+
+async function updateCachedStatus() {
+  cachedTracks = new Set();
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const keys = await cache.keys();
+    for (const req of keys) {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith('.mp3')) {
+        cachedTracks.add(decodeURIComponent(url.pathname.split('/').pop()));
+      }
+    }
+  } catch (_) {}
+  document.getElementById('syncInfo').textContent = `${cachedTracks.size}/${tracks.length} cached`;
+}
+
+function trackName(t) { return t.replace(/\.mp3$/i, ''); }
+
+function renderPlaylist() {
+  const curTrack = loaded ? order[idx] : -1;
+  document.getElementById('playlist').innerHTML = tracks.map((t, i) =>
+    `<div class="track ${i === curTrack ? 'active' : ''}" data-i="${i}">` +
+      `<span class="track-num">${i + 1}</span>` +
+      `<span class="track-name">${trackName(t)}</span>` +
+      (cachedTracks.has(t) ? '<span class="track-cached">●</span>' : '') +
+    `</div>`
+  ).join('');
+
+  document.getElementById('playlist').querySelectorAll('.track').forEach(el => {
+    el.addEventListener('click', () => {
+      const ti = parseInt(el.dataset.i);
+      idx = order.indexOf(ti);
+      if (idx === -1) idx = 0;
+      loadAndPlay();
+    });
+  });
+
+  const active = document.querySelector('.track.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+// --- Playback ---
+function getTrackUrl(filename) {
+  if (isOnline) return serverUrl + '/' + encodeURI(filename);
+  return '/' + encodeURI(filename);
+}
+
+async function loadAndPlay() {
+  const ti = order[idx];
+  const filename = tracks[ti];
+
+  // Try cache first
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match('/' + encodeURI(filename));
+    if (cached) {
+      const blob = await cached.blob();
+      audio.src = URL.createObjectURL(blob);
+      audio.load();
+      audio.play().catch(() => {});
+      loaded = true;
+      document.getElementById('playBtn').textContent = '⏸';
+      document.getElementById('nowPlaying').textContent = trackName(filename);
+      renderPlaylist();
+      return;
+    }
+  } catch (_) {}
+
+  // Fall back to server
+  const url = getTrackUrl(filename);
+  audio.src = url;
+  audio.load();
+  audio.play().catch(() => {});
+  loaded = true;
+  document.getElementById('playBtn').textContent = '⏸';
+  document.getElementById('nowPlaying').textContent = trackName(filename);
+  renderPlaylist();
+}
+
+function fmt(s) {
+  if (isNaN(s)) return '0:00';
+  return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+}
+
+// --- Controls ---
+document.getElementById('playBtn').addEventListener('click', () => {
+  if (!tracks.length) return;
+  if (!loaded) { loadAndPlay(); return; }
+  if (audio.paused) { audio.play().catch(() => {}); }
+  else { audio.pause(); }
+});
+
+document.getElementById('prevBtn').addEventListener('click', () => {
+  if (!tracks.length) return;
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  idx = (idx - 1 + order.length) % order.length;
+  loadAndPlay();
+});
+
+document.getElementById('nextBtn').addEventListener('click', () => {
+  if (!tracks.length) return;
+  idx = (idx + 1) % order.length;
+  loadAndPlay();
+});
+
+document.getElementById('shuffleBtn').addEventListener('click', () => {
+  shuffleOn = !shuffleOn;
+  const btn = document.getElementById('shuffleBtn');
+  btn.className = 'shuffle-badge ' + (shuffleOn ? 'shuffle-on' : 'shuffle-off');
+  const cur = order[idx];
+  if (shuffleOn) {
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+  } else {
+    order = tracks.map((_, i) => i);
+  }
+  idx = order.indexOf(cur);
+});
+
+audio.addEventListener('ended', () => { idx = (idx + 1) % order.length; loadAndPlay(); });
+audio.addEventListener('pause', () => { document.getElementById('playBtn').textContent = '▶'; });
+audio.addEventListener('play', () => { document.getElementById('playBtn').textContent = '⏸'; });
+audio.addEventListener('timeupdate', () => {
+  if (audio.duration) document.getElementById('seek').value = (audio.currentTime / audio.duration) * 100;
+  document.getElementById('curTime').textContent = fmt(audio.currentTime);
+  document.getElementById('durTime').textContent = fmt(audio.duration);
+});
+
+document.getElementById('seek').addEventListener('input', (e) => {
+  if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration;
+});
+document.getElementById('volume').addEventListener('input', (e) => {
+  audio.volume = e.target.value / 100;
+});
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); document.getElementById('playBtn').click(); }
+  if (e.code === 'ArrowRight') document.getElementById('nextBtn').click();
+  if (e.code === 'ArrowLeft') document.getElementById('prevBtn').click();
+});
+
+// --- YouTube Download ---
+document.getElementById('dlBtn').addEventListener('click', downloadYT);
+document.getElementById('ytUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') downloadYT(); });
+
+async function downloadYT() {
+  const url = document.getElementById('ytUrl').value.trim();
+  if (!url || !isOnline) return;
+  const btn = document.getElementById('dlBtn');
+  const status = document.getElementById('dlStatus');
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+  status.className = 'dl-status';
+  status.textContent = 'Downloading from YouTube (playlists may take a while)...';
+  try {
+    const r = await fetch(serverUrl + '/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      status.className = 'dl-status success';
+      status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!`;
+      document.getElementById('ytUrl').value = '';
+      await loadTracks();
+    } else {
+      status.className = 'dl-status error';
+      status.textContent = data.error || 'Download failed';
+    }
+  } catch (e) {
+    status.className = 'dl-status error';
+    status.textContent = 'Server error';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add';
+  setTimeout(() => { status.textContent = ''; }, 5000);
+}
+
+// --- Sync (cache all tracks for offline) ---
+document.getElementById('syncBtn').addEventListener('click', syncTracks);
+
+async function syncTracks() {
+  if (!isOnline) return;
+  const btn = document.getElementById('syncBtn');
+  const bar = document.getElementById('syncBar');
+  const info = document.getElementById('syncInfo');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+
+  const cache = await caches.open(CACHE_NAME);
+  let done = 0;
+
+  for (const t of tracks) {
+    const url = serverUrl + '/' + encodeURI(t);
+    const cacheKey = '/' + encodeURI(t);
+    try {
+      const existing = await cache.match(cacheKey);
+      if (existing) { done++; bar.style.width = Math.round((done / tracks.length) * 100) + '%'; continue; }
+      info.textContent = `Syncing ${done + 1}/${tracks.length}...`;
+      const resp = await fetch(url);
+      if (resp.ok) await cache.put(cacheKey, resp);
+    } catch (_) {}
+    done++;
+    bar.style.width = Math.round((done / tracks.length) * 100) + '%';
+  }
+
+  await updateCachedStatus();
+  bar.style.width = '100%';
+  btn.disabled = false;
+  btn.textContent = 'Sync';
+  renderPlaylist();
+}
+
+// --- Init ---
+async function init() {
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  await updateOnlineStatus();
+  await loadTracks();
+  // Re-check server periodically
+  setInterval(updateOnlineStatus, 15000);
+}
+
+init();
+</script>
+</body>
+</html>
