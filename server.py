@@ -211,6 +211,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         elif self.path == '/api/device-status':
             ip = self.client_address[0]
+            if ip == '127.0.0.1' or ip == '::1':
+                ip = get_local_ip()
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length))
             if ip in connected_devices:
@@ -219,6 +221,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         elif self.path == '/api/sync-start':
             ip = self.client_address[0]
+            if ip == '127.0.0.1' or ip == '::1':
+                ip = get_local_ip()
             device_name = connected_devices.get(ip, {}).get('name', 'Unknown')
             sync_state.update({'active': True, 'initiator': ip, 'progress': 0, 'total': 0, 'phase': 'Starting...', 'device': device_name})
             print(f"🔄 Sync started by {device_name} ({ip})")
