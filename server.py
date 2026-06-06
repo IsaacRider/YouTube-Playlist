@@ -93,6 +93,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _register_device(self):
         global allowed_devices
         ip = self.client_address[0]
+        if ip == '127.0.0.1' or ip == '::1':
+            ip = get_local_ip()
         if allowed_devices is not None and ip not in allowed_devices:
             self.send_response(403)
             self.end_headers()
@@ -115,8 +117,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/api/devices':
             cutoff = time.time() - 300
             active = [d for d in connected_devices.values() if d['last_seen'] >= cutoff]
+            total = len([f for f in os.listdir(DIR) if f.endswith('.mp3')])
+            server_ip = get_local_ip()
             for d in active:
                 d['ago'] = int(time.time() - d['last_seen'])
+                if d['ip'] == server_ip:
+                    d['cached'] = total
             self._json(200, {'devices': active, 'locked': allowed_devices is not None})
             return
         elif self.path == '/api/sync-status':
@@ -830,10 +836,8 @@ except Exception as e:
 
 if __name__ == '__main__':
     ip = get_local_ip()
-    print(f"\n🎵 Music Player Server")
-    print(f"   Local:  http://localhost:{PORT}/player.html")
-    print(f"   Phone:  http://{ip}:{PORT}/player.html")
-    print(f"\n   Open the Phone URL on Android Chrome, then 'Add to Home Screen'\n")
+    print(f"\n   Music Subscription Escape — Server running")
+    print(f"   http://{ip}:{PORT}\n")
     class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
     ThreadedServer(('', PORT), Handler).serve_forever()

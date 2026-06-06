@@ -2057,18 +2057,13 @@ document.getElementById('menuSync').addEventListener('click', () => {
 document.getElementById('syncStopBtn').addEventListener('click', () => {
   syncStopped = true;
   if (syncAbort) syncAbort.abort();
-  fetch(serverUrl + '/api/sync-stop', { method: 'POST' }).catch(() => {});
 });
 
 async function syncTracks() {
-  if (!isOnline) return;
+  if (!serverUrl) { alert('Connect to server first'); return; }
   syncStopped = false;
   syncAbort = new AbortController();
 
-  // Notify server sync started
-  fetch(serverUrl + '/api/sync-start', { method: 'POST' }).catch(() => {});
-
-  // Show sync modal
   const modal = document.getElementById('syncModal');
   const fill = document.getElementById('syncProgressFill');
   const text = document.getElementById('syncProgressText');
@@ -2077,136 +2072,111 @@ async function syncTracks() {
   fill.style.width = '0%';
   title.textContent = 'Syncing...';
 
-  let lastReport = 0;
-  function reportProgress(phase, progress, total) {
-    const pct = total > 0 ? Math.round((progress / total) * 100) : 0;
+  function showProgress(msg, done, total) {
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     fill.style.width = pct + '%';
-    text.textContent = phase;
-    const now = Date.now();
-    if (now - lastReport < 3000) return;
-    lastReport = now;
-    fetch(serverUrl + '/api/sync-progress', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phase, progress, total })
-    }).then(r => r.json()).then(data => {
-      if (data.stopped) syncStopped = true;
-    }).catch(() => {});
+    text.textContent = msg;
   }
 
-  if (IS_NATIVE) await ensureMusicDir();
-
-  // Get server track list with IDs (file sizes)
-  let serverIds = {};
   try {
-    const r = await fetch(serverUrl + '/api/tracks');
-    const data = await r.json();
-    tracks = data.tracks;
-    serverIds = data.ids || {};
+    if (IS_NATIVE) await ensureMusicDir();
+
+    // Step 1: Get track list from server
+    showProgress('Getting track list...', 0, 1);
+    const trackResp = await fetch(serverUrl + '/api/tracks', { signal: syncAbort.signal });
+    const trackData = await trackResp.json();
+    tracks = trackData.tracks || [];
     persistSave('tracks', JSON.stringify(tracks));
-  } catch (_) { return; }
 
-  // Build local ID map
-  reportProgress('Checking local files...', 0, 1);
-  const localIds = {};
-  if (IS_NATIVE) {
-    const existing = await listCachedTracksNative();
-    for (const f of existing) {
-      const size = await getTrackSizeNative(f);
-      if (size > 1000) localIds[f] = String(size);
-    }
-  } else {
-    try {
-      const cache = await caches.open('music-v5');
-      const allKeys = await cache.keys();
-      for (const req of allKeys) {
-        const u = new URL(req.url);
-        if (u.pathname.endsWith('.mp3')) {
-          const name = decodeURIComponent(u.pathname.split('/').pop());
-          const resp = await cache.match(req);
-          if (resp) {
-            const buf = await resp.arrayBuffer();
-            if (buf.byteLength > 1000) localIds[name] = String(buf.byteLength);
-          }
-        }
-      }
-    } catch (_) {}
-  }
+    // Step 2: Get playlists from server
+    showProgress('Getting playlists...', 0, 1);
+    const plResp = await fetch(serverUrl + '/api/playlists', { signal: syncAbort.signal });
+    playlists = await plResp.json();
+    persistSave('playlists', JSON.stringify(playlists));
 
-  // Phase 1: Upload local-only tracks to server
-  const localOnly = Object.keys(localIds).filter(f => !serverIds[f]);
-  if (localOnly.length > 0 && !syncStopped) {
-    for (let i = 0; i < localOnly.length && !syncStopped; i++) {
-      reportProgress(`Uploading ${i + 1}/${localOnly.length}...`, i, localOnly.length);
+    // Step 3: Get metadata from server
+    showProgress('Getting metadata...', 0, 1);
+    const metaResp = await fetch(serverUrl + '/api/metadata', { signal: syncAbort.signal });
+    metadata = await metaResp.json();
+    persistSave('metadata', JSON.stringify(metadata));
+
+    // Step 4: Figure out which MP3s we already have
+    showProgress('Checking local files...', 0, 1);
+    const localFiles = new Set();
+    if (IS_NATIVE) {
+      const existing = await listCachedTracksNative();
+      for (const f of existing) localFiles.add(f);
+    } else {
       try {
-        if (IS_NATIVE) {
-          const result = await getFS().readFile({ path: MUSIC_DIR + '/' + localOnly[i], directory: DIR_DATA });
-          const binary = atob(result.data);
-          const bytes = new Uint8Array(binary.length);
-          for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
-          const blob = new Blob([bytes], { type: 'audio/mpeg' });
-          const form = new FormData();
-          form.append('file', blob, localOnly[i]);
-          await fetch(serverUrl + '/api/upload', { method: 'POST', body: form });
-        } else {
-          const cache = await caches.open('music-v5');
-          const cached = await cache.match('/' + encodeURI(localOnly[i]));
-          if (cached) {
-            const blob = await cached.blob();
-            const form = new FormData();
-            form.append('file', blob, localOnly[i]);
-            await fetch(serverUrl + '/api/upload', { method: 'POST', body: form });
+        const cache = await caches.open('music-v5');
+        const keys = await cache.keys();
+        for (const req of keys) {
+          const u = new URL(req.url);
+          if (u.pathname.endsWith('.mp3')) {
+            localFiles.add(decodeURIComponent(u.pathname.split('/').pop()));
           }
         }
       } catch (_) {}
     }
-    if (!syncStopped) await loadTracks();
-  }
 
-  // Phase 2: Download missing tracks (compare by ID/size)
-  if (!syncStopped) {
-    const toDownload = tracks.filter(t => {
-      const serverId = serverIds[t];
-      const localId = localIds[t];
-      return !localId || localId !== serverId;
-    });
-    const skipped = tracks.length - toDownload.length;
-    const total = tracks.length;
-    let done = 0;
+    // Step 5: Download missing MP3s
+    const toDownload = tracks.filter(t => !localFiles.has(t));
+    const alreadyHave = tracks.length - toDownload.length;
     let downloaded = 0;
-    reportProgress(`${skipped} matched, ${toDownload.length} to download`, skipped, total);
+    let failed = 0;
 
-    for (const t of toDownload) {
+    if (toDownload.length === 0) {
+      showProgress(`All ${tracks.length} tracks already on device`, 1, 1);
+    }
+
+    for (let i = 0; i < toDownload.length; i++) {
       if (syncStopped) break;
-      done++;
-      reportProgress(`Downloading ${done}/${toDownload.length} — ${t.replace('.mp3','')}`, skipped + done, total);
+      const t = toDownload[i];
+      const trackName = t.replace('.mp3', '');
+      showProgress(`${alreadyHave + downloaded + 1}/${tracks.length} — ${trackName}`, alreadyHave + downloaded, tracks.length);
+
       try {
-        const fetchUrl = serverUrl + '/' + encodeURI(t) + '?_sync=1';
-        const resp = await fetch(fetchUrl, { signal: syncAbort.signal });
-        if (resp.ok) {
-          const body = await resp.arrayBuffer();
-          if (IS_NATIVE) {
-            if (await saveTrackNative(t, body)) downloaded++;
-          } else {
-            const cache = await caches.open('music-v5');
-            const cacheUrl = new URL('/' + encodeURI(t), location.origin).href;
-            await cache.put(new Request(cacheUrl), new Response(body, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } }));
-            downloaded++;
-          }
+        const resp = await fetch(serverUrl + '/' + encodeURI(t) + '?_sync=1', { signal: syncAbort.signal });
+        if (!resp.ok) { failed++; continue; }
+        const body = await resp.arrayBuffer();
+
+        if (IS_NATIVE) {
+          const ok = await saveTrackNative(t, body);
+          if (ok) downloaded++; else failed++;
+        } else {
+          const cache = await caches.open('music-v5');
+          const cacheUrl = new URL('/' + encodeURI(t), location.origin).href;
+          await cache.put(new Request(cacheUrl), new Response(body, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } }));
+          downloaded++;
         }
       } catch (e) {
-        console.error('Sync failed for:', t, e);
+        if (syncStopped) break;
+        failed++;
+        console.error('Download failed:', t, e);
       }
+    }
+
+    // Done
+    await updateCachedStatus();
+    fill.style.width = '100%';
+    if (syncStopped) {
+      title.textContent = 'Sync Stopped';
+      text.textContent = `Downloaded ${downloaded} tracks before stopping.`;
+    } else {
+      title.textContent = 'Sync Complete';
+      const total = cachedTracks.size;
+      text.textContent = failed > 0
+        ? `${total}/${tracks.length} tracks on device (${failed} failed)`
+        : `${total}/${tracks.length} tracks on device ✓`;
+    }
+
+  } catch (e) {
+    if (!syncStopped) {
+      title.textContent = 'Sync Failed';
+      text.textContent = 'Could not reach server: ' + e.message;
     }
   }
 
-  // Finish
-  fetch(serverUrl + '/api/sync-stop', { method: 'POST' }).catch(() => {});
-  await updateCachedStatus();
-  fill.style.width = '100%';
-  title.textContent = syncStopped ? 'Sync Stopped' : 'Sync Complete';
-  const finalCached = cachedTracks.size;
-  text.textContent = syncStopped ? 'Sync was cancelled.' : `${finalCached}/${tracks.length} tracks cached ✓`;
   document.getElementById('syncStopBtn').textContent = 'Close';
   document.getElementById('syncStopBtn').style.background = '#333';
   document.getElementById('syncStopBtn').onclick = () => {
@@ -2215,7 +2185,7 @@ async function syncTracks() {
     document.getElementById('syncStopBtn').style.background = '#ef4444';
     document.getElementById('syncStopBtn').onclick = () => {
       syncStopped = true;
-      fetch(serverUrl + '/api/sync-stop', { method: 'POST' }).catch(() => {});
+      if (syncAbort) syncAbort.abort();
     };
   };
   renderPlaylist();
