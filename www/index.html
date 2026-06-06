@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111111">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.json">
+<!-- manifest not needed for native app -->
 <title>Music Subscription Escape</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -420,7 +420,8 @@
 
 <script>
 const APP_VERSION = 3;
-const CACHE_NAME = 'music-v5';
+const IS_NATIVE = typeof window.Capacitor !== 'undefined';
+const MUSIC_DIR = 'mse_music';
 const audio = new Audio();
 audio.volume = 1.0;
 
@@ -456,44 +457,85 @@ let activePlaylist = null;
 let viewingPlaylist = null;
 let waitingWorker = null;
 
-// --- App Update ---
-function setupUpdateListener() {
-  if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('/sw.js').then(reg => {
-    reg.addEventListener('updatefound', () => {
-      const newWorker = reg.installing;
-      newWorker.addEventListener('statechange', () => {
-        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-          waitingWorker = newWorker;
-          document.getElementById('updateBtn').classList.add('visible');
-        }
-      });
-    });
-    if (reg.waiting && navigator.serviceWorker.controller) {
-      waitingWorker = reg.waiting;
-      document.getElementById('updateBtn').classList.add('visible');
-    }
-    setInterval(() => reg.update(), 60000);
-  }).catch(() => {});
+// --- Capacitor Filesystem helpers ---
+function getFS() { return window.Capacitor.Plugins.Filesystem; }
+const DIR_DATA = 'DATA';
 
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    window.location.reload();
-  });
+async function ensureMusicDir() {
+  if (!IS_NATIVE) return;
+  try {
+    await getFS().mkdir({ path: MUSIC_DIR, directory: DIR_DATA, recursive: true });
+  } catch (_) {}
 }
 
+async function isTrackCachedNative(filename) {
+  if (!IS_NATIVE) return false;
+  try {
+    await getFS().stat({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+    return true;
+  } catch (_) { return false; }
+}
+
+async function getTrackUriNative(filename) {
+  if (!IS_NATIVE) return null;
+  try {
+    const result = await getFS().getUri({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+    return window.Capacitor.convertFileSrc(result.uri);
+  } catch (_) { return null; }
+}
+
+async function saveTrackNative(filename, arrayBuffer) {
+  if (!IS_NATIVE) return false;
+  try {
+    const base64 = arrayBufferToBase64(arrayBuffer);
+    await getFS().writeFile({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA, data: base64 });
+    return true;
+  } catch (e) { console.error('Failed to save track:', filename, e); return false; }
+}
+
+async function deleteTrackNative(filename) {
+  if (!IS_NATIVE) return;
+  try {
+    await getFS().deleteFile({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+  } catch (_) {}
+}
+
+async function listCachedTracksNative() {
+  if (!IS_NATIVE) return [];
+  try {
+    const result = await getFS().readdir({ path: MUSIC_DIR, directory: DIR_DATA });
+    return result.files.filter(f => f.name.endsWith('.mp3')).map(f => f.name);
+  } catch (_) { return []; }
+}
+
+async function getTrackSizeNative(filename) {
+  if (!IS_NATIVE) return 0;
+  try {
+    const stat = await getFS().stat({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+    return stat.size || 0;
+  } catch (_) { return 0; }
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// --- App Update (no-op for native) ---
+function setupUpdateListener() {}
 document.getElementById('updateBtn').addEventListener('click', () => {
-  if (waitingWorker) {
-    waitingWorker.postMessage({ type: 'SKIP_WAITING' });
-  } else {
-    caches.delete(CACHE_NAME).then(() => window.location.reload());
-  }
+  window.location.reload();
 });
 
 // --- Server detection ---
 async function detectServer() {
-  const origins = [location.origin];
+  const origins = [];
+  if (!IS_NATIVE) origins.push(location.origin);
   const saved = localStorage.getItem('serverUrl');
-  if (saved && saved !== location.origin) origins.push(saved);
+  if (saved) origins.push(saved);
 
   for (const origin of origins) {
     try {
@@ -504,6 +546,21 @@ async function detectServer() {
         return true;
       }
     } catch (_) {}
+  }
+
+  // For native app — prompt for server URL if not found
+  if (IS_NATIVE && !serverUrl) {
+    const url = prompt('Enter server address (e.g. http://192.168.1.100:8000)');
+    if (url) {
+      try {
+        const r = await fetch(url + '/api/tracks', { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          serverUrl = url;
+          localStorage.setItem('serverUrl', url);
+          return true;
+        }
+      } catch (_) {}
+    }
   }
   return false;
 }
@@ -574,16 +631,21 @@ function getPlaylistTracks(name) {
 
 async function updateCachedStatus() {
   cachedTracks = new Set();
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    const keys = await cache.keys();
-    for (const req of keys) {
-      const url = new URL(req.url);
-      if (url.pathname.endsWith('.mp3')) {
-        cachedTracks.add(decodeURIComponent(url.pathname.split('/').pop()));
+  if (IS_NATIVE) {
+    const files = await listCachedTracksNative();
+    for (const f of files) cachedTracks.add(f);
+  } else {
+    try {
+      const cache = await caches.open('music-v5');
+      const keys = await cache.keys();
+      for (const req of keys) {
+        const url = new URL(req.url);
+        if (url.pathname.endsWith('.mp3')) {
+          cachedTracks.add(decodeURIComponent(url.pathname.split('/').pop()));
+        }
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   document.getElementById('syncInfo').textContent = `${cachedTracks.size}/${tracks.length} cached`;
 }
 
@@ -696,10 +758,14 @@ async function deleteTrack(filename) {
     }
   }
   // Remove from cache
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    await cache.delete('/' + encodeURI(filename));
-  } catch (_) {}
+  if (IS_NATIVE) {
+    await deleteTrackNative(filename);
+  } else {
+    try {
+      const cache = await caches.open('music-v5');
+      await cache.delete('/' + encodeURI(filename));
+    } catch (_) {}
+  }
   cachedTracks.delete(filename);
   // Remove from metadata
   delete metadata[filename];
@@ -750,16 +816,20 @@ async function loadAndPlay() {
   updateMediaSession(filename);
   updateActiveHighlight();
 
-  // Load and play audio in background
+  // Load and play audio
   let src;
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    const cached = await cache.match('/' + encodeURI(filename));
-    if (cached) {
-      const blob = await cached.blob();
-      src = URL.createObjectURL(blob);
-    }
-  } catch (_) {}
+  if (IS_NATIVE) {
+    src = await getTrackUriNative(filename);
+  } else {
+    try {
+      const cache = await caches.open('music-v5');
+      const cached = await cache.match('/' + encodeURI(filename));
+      if (cached) {
+        const blob = await cached.blob();
+        src = URL.createObjectURL(blob);
+      }
+    } catch (_) {}
+  }
 
   if (!src) src = getTrackUrl(filename);
 
@@ -903,14 +973,18 @@ function restoreState() {
         // Load audio and seek to saved position but don't play
         (async () => {
           let src;
-          try {
-            const cache = await caches.open(CACHE_NAME);
-            const cached = await cache.match('/' + encodeURI(state.track));
-            if (cached) {
-              const blob = await cached.blob();
-              src = URL.createObjectURL(blob);
-            }
-          } catch (_) {}
+          if (IS_NATIVE) {
+            src = await getTrackUriNative(state.track);
+          } else {
+            try {
+              const cache = await caches.open('music-v5');
+              const cached = await cache.match('/' + encodeURI(state.track));
+              if (cached) {
+                const blob = await cached.blob();
+                src = URL.createObjectURL(blob);
+              }
+            } catch (_) {}
+          }
           if (!src) src = getTrackUrl(state.track);
           audio.src = src;
           audio.load();
@@ -1946,64 +2020,82 @@ async function syncTracks() {
     } catch (_) {}
   }
 
-  const cache = await caches.open(CACHE_NAME);
+  if (IS_NATIVE) await ensureMusicDir();
 
   // Phase 1: Upload device-only cached tracks to server
   await reportProgress('Checking local cache...', 0, 1, true);
-  const keys = await cache.keys();
-  const cachedFiles = [];
-  for (const req of keys) {
-    const url = new URL(req.url);
-    if (url.pathname.endsWith('.mp3')) {
-      cachedFiles.push(decodeURIComponent(url.pathname.split('/').pop()));
-    }
+  let cachedFiles;
+  if (IS_NATIVE) {
+    cachedFiles = await listCachedTracksNative();
+  } else {
+    cachedFiles = [];
+    try {
+      const cache = await caches.open('music-v5');
+      const keys = await cache.keys();
+      for (const req of keys) {
+        const url = new URL(req.url);
+        if (url.pathname.endsWith('.mp3')) cachedFiles.push(decodeURIComponent(url.pathname.split('/').pop()));
+      }
+    } catch (_) {}
   }
   const localOnly = cachedFiles.filter(f => !tracks.includes(f));
   if (localOnly.length > 0 && !syncStopped) {
     for (let i = 0; i < localOnly.length && !syncStopped; i++) {
       await reportProgress(`Uploading ${i + 1}/${localOnly.length}...`, i, localOnly.length, false);
       try {
-        const cached = await cache.match('/' + encodeURI(localOnly[i]));
-        if (cached) {
-          const blob = await cached.blob();
+        if (IS_NATIVE) {
+          const result = await getFS().readFile({ path: MUSIC_DIR + '/' + localOnly[i], directory: DIR_DATA });
+          const binary = atob(result.data);
+          const bytes = new Uint8Array(binary.length);
+          for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+          const blob = new Blob([bytes], { type: 'audio/mpeg' });
           const form = new FormData();
           form.append('file', blob, localOnly[i]);
           await fetch(serverUrl + '/api/upload', { method: 'POST', body: form });
+        } else {
+          const cache = await caches.open('music-v5');
+          const cached = await cache.match('/' + encodeURI(localOnly[i]));
+          if (cached) {
+            const blob = await cached.blob();
+            const form = new FormData();
+            form.append('file', blob, localOnly[i]);
+            await fetch(serverUrl + '/api/upload', { method: 'POST', body: form });
+          }
         }
       } catch (_) {}
     }
     if (!syncStopped) await loadTracks();
   }
 
-  // Phase 2: Download server tracks to local cache
+  // Phase 2: Download server tracks to device
   if (!syncStopped) {
-    // Validate cached files — check each has real audio content
-    await reportProgress('Validating cached files...', 0, 1, true);
+    await reportProgress('Checking existing files...', 0, 1, true);
     const alreadyCached = new Set();
-    let purged = 0;
-    try {
-      const allKeys = await cache.keys();
-      for (const req of allKeys) {
-        const u = new URL(req.url);
-        if (u.pathname.endsWith('.mp3')) {
-          const name = decodeURIComponent(u.pathname.split('/').pop());
-          const resp = await cache.match(req);
-          if (resp) {
-            const buf = await resp.arrayBuffer();
-            if (buf.byteLength > 1000) {
-              alreadyCached.add(name);
-            } else {
-              await cache.delete(req);
-              purged++;
-            }
-          } else {
-            await cache.delete(req);
-            purged++;
+    if (IS_NATIVE) {
+      const existing = await listCachedTracksNative();
+      for (const f of existing) {
+        const size = await getTrackSizeNative(f);
+        if (size > 1000) alreadyCached.add(f);
+        else await deleteTrackNative(f);
+      }
+    } else {
+      try {
+        const cache = await caches.open('music-v5');
+        const allKeys = await cache.keys();
+        for (const req of allKeys) {
+          const u = new URL(req.url);
+          if (u.pathname.endsWith('.mp3')) {
+            const name = decodeURIComponent(u.pathname.split('/').pop());
+            const resp = await cache.match(req);
+            if (resp) {
+              const buf = await resp.arrayBuffer();
+              if (buf.byteLength > 1000) alreadyCached.add(name);
+              else await cache.delete(req);
+            } else { await cache.delete(req); }
           }
         }
-      }
-    } catch (_) {}
-    if (purged > 0) console.log('Purged', purged, 'invalid cache entries');
+      } catch (_) {}
+    }
 
     let done = 0;
     let downloaded = 0;
@@ -2015,20 +2107,22 @@ async function syncTracks() {
     for (const t of toDownload) {
       if (syncStopped) break;
       done++;
-      const encodedName = encodeURI(t);
-      const fetchUrl = serverUrl + '/' + encodedName + '?_sync=1';
-      const cacheUrl = new URL('/' + encodedName, location.origin).href;
       try {
         await reportProgress(`Downloading ${done}/${toDownload.length} — ${t.replace('.mp3','')}`, skipped + done, total, false);
+        const fetchUrl = serverUrl + '/' + encodeURI(t) + '?_sync=1';
         const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(60000) });
         if (resp.ok) {
           const body = await resp.arrayBuffer();
-          const cacheResp = new Response(body, {
-            status: 200,
-            headers: { 'Content-Type': 'audio/mpeg' }
-          });
-          await cache.put(new Request(cacheUrl), cacheResp);
-          downloaded++;
+          if (IS_NATIVE) {
+            const saved = await saveTrackNative(t, body);
+            if (saved) downloaded++;
+          } else {
+            const cache = await caches.open('music-v5');
+            const cacheUrl = new URL('/' + encodeURI(t), location.origin).href;
+            const cacheResp = new Response(body, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } });
+            await cache.put(new Request(cacheUrl), cacheResp);
+            downloaded++;
+          }
         } else {
           console.warn('Sync: server returned', resp.status, 'for', t);
         }
@@ -2287,6 +2381,7 @@ async function loadMetadata() {
 }
 
 async function init() {
+  if (IS_NATIVE) await ensureMusicDir();
   setupUpdateListener();
   await updateOnlineStatus();
   await loadMetadata();

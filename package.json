@@ -1,0 +1,28 @@
+{
+  "name": "youtube-playlist",
+  "version": "1.0.0",
+  "description": "A self-hosted PWA music player that downloads YouTube videos as MP3s and plays them offline on any device — desktop or Android phone.",
+  "main": "sw.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IsaacRider/YouTube-Playlist.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/IsaacRider/YouTube-Playlist/issues"
+  },
+  "homepage": "https://github.com/IsaacRider/YouTube-Playlist#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/cli": "^8.4.0",
+    "@capacitor/core": "^8.4.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/ios": "^8.4.0"
+  }
+}

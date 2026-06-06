@@ -1,0 +1,16 @@
+{
+  "appId": "com.mse.player",
+  "appName": "Music Subscription Escape",
+  "webDir": "www",
+  "server": {
+    "allowNavigation": ["*"]
+  },
+  "plugins": {
+    "Filesystem": {
+      "requestPermissions": true
+    }
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

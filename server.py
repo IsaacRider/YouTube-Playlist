@@ -75,6 +75,10 @@ def _same_video(url1, url2):
     id2 = _extract_video_id(url2)
     return id1 and id2 and id1 == id2
 
+connected_devices = {}  # ip -> {name, last_seen, user_agent}
+allowed_devices = None  # None = unlocked, set(...) = locked to these IPs
+sync_state = {'active': False, 'initiator': None, 'progress': 0, 'total': 0, 'phase': '', 'device': ''}
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -86,8 +90,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def _register_device(self):
+        global allowed_devices
+        ip = self.client_address[0]
+        if allowed_devices is not None and ip not in allowed_devices:
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b'{"error":"Device not authorized"}')
+            return False
+        ua = self.headers.get('User-Agent', '')
+        name = 'Unknown'
+        if 'iPhone' in ua: name = 'iPhone'
+        elif 'iPad' in ua: name = 'iPad'
+        elif 'Android' in ua: name = 'Android'
+        elif 'Macintosh' in ua or 'Mac OS' in ua: name = 'Mac'
+        elif 'Windows' in ua: name = 'Windows PC'
+        elif 'Linux' in ua: name = 'Linux'
+        existing = connected_devices.get(ip, {})
+        connected_devices[ip] = {'name': name, 'ip': ip, 'last_seen': time.time(), 'user_agent': ua, 'cached': existing.get('cached', 0)}
+        return True
+
     def do_GET(self):
-        if self.path == '/api/tracks':
+        if not self._register_device(): return
+        if self.path == '/api/devices':
+            cutoff = time.time() - 300
+            active = [d for d in connected_devices.values() if d['last_seen'] >= cutoff]
+            for d in active:
+                d['ago'] = int(time.time() - d['last_seen'])
+            self._json(200, {'devices': active, 'locked': allowed_devices is not None})
+            return
+        elif self.path == '/api/sync-status':
+            self._json(200, sync_state)
+            return
+        elif self.path == '/api/tracks':
             mp3s = [f for f in os.listdir(DIR) if f.endswith('.mp3')]
             files = sorted(mp3s, key=lambda f: os.path.getmtime(os.path.join(DIR, f)), reverse=True)
             sizes = {}
@@ -109,7 +144,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_DELETE(self):
-        if self.path.startswith('/api/tracks/'):
+        if not self._register_device(): return
+        if self.path == '/api/tracks/all':
+            mp3s = [f for f in os.listdir(DIR) if f.endswith('.mp3')]
+            for f in mp3s:
+                os.remove(os.path.join(DIR, f))
+            save_playlists({})
+            save_metadata({})
+            rebuild_filelist()
+            print(f"🗑 Deleted all {len(mp3s)} tracks")
+            self._json(200, {'ok': True, 'deleted': len(mp3s)})
+        elif self.path.startswith('/api/tracks/'):
             filename = urllib.parse.unquote(self.path[len('/api/tracks/'):])
             filepath = os.path.join(DIR, filename)
             if os.path.exists(filepath) and filename.endswith('.mp3'):
@@ -141,7 +186,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        if self.path == '/api/playlists':
+        if not self._register_device(): return
+        if self.path == '/api/devices/lock':
+            global allowed_devices
+            if allowed_devices is not None:
+                allowed_devices = None
+                print("🔓 Devices unlocked")
+                self._json(200, {'ok': True, 'locked': False})
+            else:
+                cutoff = time.time() - 300
+                allowed_devices = {ip for ip, d in connected_devices.items() if d['last_seen'] >= cutoff}
+                print(f"🔒 Devices locked to: {allowed_devices}")
+                self._json(200, {'ok': True, 'locked': True})
+            return
+        elif self.path == '/api/device-status':
+            ip = self.client_address[0]
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length))
+            if ip in connected_devices:
+                connected_devices[ip]['cached'] = body.get('cached', 0)
+            self._json(200, {'ok': True})
+            return
+        elif self.path == '/api/sync-start':
+            ip = self.client_address[0]
+            device_name = connected_devices.get(ip, {}).get('name', 'Unknown')
+            sync_state.update({'active': True, 'initiator': ip, 'progress': 0, 'total': 0, 'phase': 'Starting...', 'device': device_name})
+            print(f"🔄 Sync started by {device_name} ({ip})")
+            self._json(200, {'ok': True})
+            return
+        elif self.path == '/api/sync-progress':
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length))
+            sync_state['progress'] = body.get('progress', 0)
+            sync_state['total'] = body.get('total', 0)
+            sync_state['phase'] = body.get('phase', '')
+            self._json(200, {'ok': True, 'stopped': not sync_state['active']})
+            return
+        elif self.path == '/api/sync-stop':
+            sync_state.update({'active': False, 'initiator': None, 'progress': 0, 'total': 0, 'phase': '', 'device': ''})
+            print("⏹ Sync stopped")
+            self._json(200, {'ok': True})
+            return
+        elif self.path == '/api/playlists':
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length))
             name = body.get('name', '').strip()
