@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.8</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.9</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -451,20 +451,72 @@ function renderErrorLog() {
 const audio = new Audio();
 audio.volume = 1.0;
 
-// Native media session bridge (Android notification controls)
+// Native media session bridge (Android notification controls + native audio)
 const NativeMediaSession = (() => {
   if (!IS_NATIVE) return null;
   const plugin = window.Capacitor?.Plugins?.MediaSession;
   if (!plugin) return null;
 
+  // Native audio state tracked here
+  let nativePlaying = false;
+  let nativePosition = 0;
+  let nativeDuration = 0;
+
+  // Override audio object properties for native playback
+  Object.defineProperty(audio, 'paused', { get() { return !nativePlaying; }, configurable: true });
+  Object.defineProperty(audio, 'currentTime', {
+    get() { return nativePosition / 1000; },
+    set(v) { plugin.nativeSeek({ position: v }); nativePosition = v * 1000; },
+    configurable: true
+  });
+  Object.defineProperty(audio, 'duration', { get() { return nativeDuration / 1000; }, configurable: true });
+  audio.play = () => { plugin.nativeResume({}); return Promise.resolve(); };
+  audio.pause = () => { plugin.nativePause({}); };
+  audio.load = () => {};
+
+  window._nativeAudioEvent = function(event, v1, v2) {
+    switch (event) {
+      case 'timeupdate':
+        nativePosition = v1;
+        nativeDuration = v2;
+        audio.dispatchEvent(new Event('timeupdate'));
+        break;
+      case 'prepared':
+        nativeDuration = v1;
+        nativePlaying = true;
+        audio.dispatchEvent(new Event('play'));
+        audio.dispatchEvent(new Event('loadedmetadata'));
+        break;
+      case 'paused':
+        nativePlaying = false;
+        nativePosition = v1;
+        nativeDuration = v2;
+        audio.dispatchEvent(new Event('pause'));
+        break;
+      case 'playing':
+        nativePlaying = true;
+        nativePosition = v1;
+        nativeDuration = v2;
+        audio.dispatchEvent(new Event('play'));
+        break;
+      case 'ended':
+        nativePlaying = false;
+        audio.dispatchEvent(new Event('ended'));
+        break;
+      case 'error':
+        nativePlaying = false;
+        break;
+    }
+  };
+
   window._mediaAction = function(action, seekTime, filename, playlist) {
     switch (action) {
-      case 'play': audio.play().catch(() => {}); break;
-      case 'pause': audio.pause(); break;
+      case 'play': plugin.nativeResume({}); break;
+      case 'pause': plugin.nativePause({}); break;
       case 'nexttrack': nextTrack(); break;
       case 'previoustrack': prevTrack(); break;
       case 'seekto':
-        if (seekTime != null && audio.duration) audio.currentTime = seekTime;
+        if (seekTime != null) plugin.nativeSeek({ position: seekTime });
         break;
       case 'playTrack':
         if (filename) playSpecificTrack(filename, playlist || null);
@@ -477,7 +529,13 @@ const NativeMediaSession = (() => {
       plugin.updateMetadata({ title, artist, album });
     },
     updatePlayback(playing, position, duration) {
-      plugin.updatePlayback({ playing, position, duration });
+      // no-op: native player manages its own state now
+    },
+    nativePlay(filePath) {
+      plugin.nativePlay({ filePath });
+    },
+    nativeSetVolume(vol) {
+      plugin.nativeSetVolume({ volume: vol });
     },
     updateMediaTree(tracksList, playlistsObj) {
       plugin.updateMediaTree({ tracks: tracksList, playlists: playlistsObj });
@@ -488,18 +546,24 @@ const NativeMediaSession = (() => {
 
 let audioCtx, gainNode, sourceNode;
 function ensureGain() {
-  if (gainNode) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  sourceNode = audioCtx.createMediaElementSource(audio);
-  gainNode = audioCtx.createGain();
-  sourceNode.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
-  gainNode.gain.value = 0.8;
+  if (!IS_NATIVE) {
+    if (gainNode) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    sourceNode = audioCtx.createMediaElementSource(audio);
+    gainNode = audioCtx.createGain();
+    sourceNode.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    gainNode.gain.value = 0.8;
+  }
 }
 
 function setVolume(pct) {
-  ensureGain();
-  gainNode.gain.value = pct / 100;
+  if (IS_NATIVE && NativeMediaSession) {
+    NativeMediaSession.nativeSetVolume(pct / 100);
+  } else {
+    ensureGain();
+    gainNode.gain.value = pct / 100;
+  }
   document.getElementById('volLabel').textContent = pct + '%';
 }
 
@@ -1283,10 +1347,12 @@ async function loadAndPlay(specificFile) {
   updateActiveHighlight();
 
   // Load and play audio
-  let src;
-  if (IS_NATIVE) {
-    src = await getTrackUriNative(filename);
+  if (IS_NATIVE && NativeMediaSession) {
+    const result = await getFS().getUri({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
+    const filePath = result.uri.replace('file://', '');
+    NativeMediaSession.nativePlay(filePath);
   } else {
+    let src;
     try {
       const cache = await caches.open('music-v5');
       const cached = await cache.match('/' + encodeURI(filename));
@@ -1295,29 +1361,24 @@ async function loadAndPlay(specificFile) {
         src = URL.createObjectURL(blob);
       }
     } catch (_) {}
-  }
 
-  const fromServer = !src;
-  if (!src) src = getTrackUrl(filename);
+    const fromServer = !src;
+    if (!src) src = getTrackUrl(filename);
 
-  audio.src = src;
-  audio.load();
-  audio.play().catch(() => {});
+    audio.src = src;
+    audio.load();
+    audio.play().catch(() => {});
 
-  // Auto-cache for offline: if playing from server, save locally in background
-  if (fromServer && isOnline) {
-    fetch(getTrackUrl(filename)).then(r => r.ok ? r.arrayBuffer() : null).then(async buf => {
-      if (!buf) return;
-      if (IS_NATIVE) {
-        await saveTrackNative(filename, buf);
-      } else {
+    if (fromServer && isOnline) {
+      fetch(getTrackUrl(filename)).then(r => r.ok ? r.arrayBuffer() : null).then(async buf => {
+        if (!buf) return;
         try {
           const cache = await caches.open('music-v5');
           await cache.put('/' + encodeURI(filename), new Response(new Blob([buf], { type: 'audio/mpeg' })));
         } catch (_) {}
-      }
-      cachedTracks.add(filename);
-    }).catch(() => {});
+        cachedTracks.add(filename);
+      }).catch(() => {});
+    }
   }
 
   saveState();
@@ -1555,11 +1616,9 @@ function restoreState() {
         renderPlaylist();
 
         // Load audio and seek to saved position but don't play
-        (async () => {
-          let src;
-          if (IS_NATIVE) {
-            src = await getTrackUriNative(state.track);
-          } else {
+        if (!IS_NATIVE) {
+          (async () => {
+            let src;
             try {
               const cache = await caches.open('music-v5');
               const cached = await cache.match('/' + encodeURI(state.track));
@@ -1568,16 +1627,16 @@ function restoreState() {
                 src = URL.createObjectURL(blob);
               }
             } catch (_) {}
-          }
-          if (!src) src = getTrackUrl(state.track);
-          audio.src = src;
-          audio.load();
-          audio.addEventListener('loadedmetadata', () => {
-            if (state.position > 0 && state.position < audio.duration) {
-              audio.currentTime = state.position;
-            }
-          }, { once: true });
-        })();
+            if (!src) src = getTrackUrl(state.track);
+            audio.src = src;
+            audio.load();
+            audio.addEventListener('loadedmetadata', () => {
+              if (state.position > 0 && state.position < audio.duration) {
+                audio.currentTime = state.position;
+              }
+            }, { once: true });
+          })();
+        }
       }
     }
   } catch (_) {}

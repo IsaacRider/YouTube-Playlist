@@ -11,7 +11,10 @@ import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -26,6 +29,8 @@ import androidx.core.app.NotificationCompat;
 import androidx.media.MediaBrowserServiceCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,6 +58,11 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
 
+    private MediaPlayer mediaPlayer;
+    private Handler positionHandler = new Handler(Looper.getMainLooper());
+    private Runnable positionUpdater;
+    private float currentVolume = 1.0f;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -63,20 +73,65 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mse:audio");
         wakeLock.acquire();
 
+        mediaPlayer = new MediaPlayer();
+        mediaPlayer.setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build());
+        mediaPlayer.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
+
+        mediaPlayer.setOnCompletionListener(mp -> {
+            isPlaying = false;
+            updatePlaybackState(false, 0, duration);
+            MediaSessionPlugin.sendAction("nexttrack");
+        });
+
+        mediaPlayer.setOnPreparedListener(mp -> {
+            duration = mp.getDuration();
+            mp.start();
+            isPlaying = true;
+            audioManager.requestAudioFocus(audioFocusRequest);
+            updatePlaybackState(true, 0, duration);
+            updateNotification();
+            startPositionUpdates();
+            MediaSessionPlugin.sendNativeEvent("prepared", duration);
+        });
+
+        mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+            isPlaying = false;
+            updatePlaybackState(false, 0, 0);
+            return true;
+        });
+
+        positionUpdater = new Runnable() {
+            @Override
+            public void run() {
+                if (mediaPlayer != null && isPlaying) {
+                    try {
+                        long pos = mediaPlayer.getCurrentPosition();
+                        long dur = mediaPlayer.getDuration();
+                        position = pos;
+                        duration = dur;
+                        updatePlaybackState(true, pos, dur);
+                        MediaSessionPlugin.sendNativeEvent("timeupdate", pos, dur);
+                    } catch (Exception e) { /* player may be released */ }
+                }
+                positionHandler.postDelayed(this, 1000);
+            }
+        };
+
         mediaSession = new MediaSessionCompat(this, "MSEPlayer");
         setSessionToken(mediaSession.getSessionToken());
         mediaSession.setActive(true);
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
-                updatePlaybackState(true, position, duration);
-                MediaSessionPlugin.sendAction("play");
+                nativeResume();
             }
 
             @Override
             public void onPause() {
-                updatePlaybackState(false, position, duration);
-                MediaSessionPlugin.sendAction("pause");
+                nativePause();
             }
 
             @Override
@@ -91,7 +146,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
             @Override
             public void onSeekTo(long pos) {
-                MediaSessionPlugin.sendSeek(pos / 1000.0);
+                nativeSeekTo((int) pos);
             }
 
             @Override
@@ -113,21 +168,108 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 .setWillPauseWhenDucked(false)
                 .setOnAudioFocusChangeListener(focusChange -> {
                     if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
-                        updatePlaybackState(false, position, duration);
-                        MediaSessionPlugin.sendAction("pause");
+                        nativePause();
                     } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                        updatePlaybackState(false, position, duration);
-                        MediaSessionPlugin.sendAction("pause");
+                        nativePause();
                     } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
-                        updatePlaybackState(true, position, duration);
-                        MediaSessionPlugin.sendAction("play");
+                        nativeResume();
                     }
                 })
                 .build();
-        audioManager.requestAudioFocus(audioFocusRequest);
 
         showInitialNotification();
         registerBluetoothAutoResume();
+    }
+
+    // --- Native MediaPlayer controls ---
+
+    void nativePlayFile(String filePath) {
+        try {
+            mediaPlayer.reset();
+            File file = new File(filePath);
+            if (!file.exists()) {
+                File mseDir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_MUSIC), "MSE");
+                file = new File(mseDir, filePath);
+            }
+            mediaPlayer.setDataSource(file.getAbsolutePath());
+            mediaPlayer.prepareAsync();
+        } catch (IOException e) {
+            MediaSessionPlugin.sendNativeEvent("error", 0);
+        }
+    }
+
+    void nativePause() {
+        if (mediaPlayer != null && isPlaying) {
+            mediaPlayer.pause();
+            isPlaying = false;
+            position = mediaPlayer.getCurrentPosition();
+            updatePlaybackState(false, position, duration);
+            updateNotification();
+            stopPositionUpdates();
+            MediaSessionPlugin.sendNativeEvent("paused", position, duration);
+        }
+    }
+
+    void nativeResume() {
+        if (mediaPlayer != null && !isPlaying) {
+            mediaPlayer.start();
+            isPlaying = true;
+            audioManager.requestAudioFocus(audioFocusRequest);
+            updatePlaybackState(true, mediaPlayer.getCurrentPosition(), duration);
+            updateNotification();
+            startPositionUpdates();
+            MediaSessionPlugin.sendNativeEvent("playing", mediaPlayer.getCurrentPosition(), duration);
+        }
+    }
+
+    void nativeSeekTo(int posMs) {
+        if (mediaPlayer != null) {
+            mediaPlayer.seekTo(posMs);
+            position = posMs;
+            updatePlaybackState(isPlaying, posMs, duration);
+        }
+    }
+
+    void nativeStop() {
+        if (mediaPlayer != null) {
+            mediaPlayer.stop();
+            isPlaying = false;
+            stopPositionUpdates();
+            updatePlaybackState(false, 0, 0);
+            updateNotification();
+        }
+    }
+
+    void nativeSetVolume(float vol) {
+        currentVolume = vol;
+        if (mediaPlayer != null) {
+            mediaPlayer.setVolume(vol, vol);
+        }
+    }
+
+    boolean isNativePlaying() {
+        return isPlaying;
+    }
+
+    long getNativePosition() {
+        if (mediaPlayer != null && isPlaying) {
+            try { return mediaPlayer.getCurrentPosition(); } catch (Exception e) {}
+        }
+        return position;
+    }
+
+    long getNativeDuration() {
+        return duration;
+    }
+
+    private void startPositionUpdates() {
+        positionHandler.removeCallbacks(positionUpdater);
+        positionHandler.post(positionUpdater);
+    }
+
+    private void stopPositionUpdates() {
+        positionHandler.removeCallbacks(positionUpdater);
     }
 
     private void registerBluetoothAutoResume() {
@@ -139,7 +281,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 for (AudioDeviceInfo d : addedDevices) {
                     if (d.isSink() && d.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
                         new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                            if (!isPlaying) MediaSessionPlugin.sendAction("play");
+                            if (!isPlaying) nativeResume();
                         }, 1500);
                         break;
                     }
@@ -155,7 +297,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 this, 0, launchIntent, PendingIntent.FLAG_IMMUTABLE);
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Music Subscription Escape")
+                .setContentTitle("MSE")
                 .setSmallIcon(R.drawable.ic_music_note)
                 .setContentIntent(contentIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -272,12 +414,10 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
         if (intent != null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case "ACTION_PLAY":
-                    updatePlaybackState(true, position, duration);
-                    MediaSessionPlugin.sendAction("play");
+                    nativeResume();
                     break;
                 case "ACTION_PAUSE":
-                    updatePlaybackState(false, position, duration);
-                    MediaSessionPlugin.sendAction("pause");
+                    nativePause();
                     break;
                 case "ACTION_NEXT":
                     MediaSessionPlugin.sendAction("nexttrack");
@@ -292,6 +432,12 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     @Override
     public void onDestroy() {
+        stopPositionUpdates();
+        if (mediaPlayer != null) {
+            mediaPlayer.stop();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
         if (audioManager != null && audioFocusRequest != null) {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         }
@@ -386,7 +532,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 buildActionIntent("ACTION_NEXT")).build();
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(currentTitle.isEmpty() ? "Music Subscription Escape" : currentTitle)
+                .setContentTitle(currentTitle.isEmpty() ? "MSE" : currentTitle)
                 .setContentText(currentArtist)
                 .setSubText(currentAlbum)
                 .setSmallIcon(R.drawable.ic_music_note)

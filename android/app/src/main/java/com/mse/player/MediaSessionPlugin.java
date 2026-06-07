@@ -89,6 +89,54 @@ public class MediaSessionPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void nativePlay(PluginCall call) {
+        String filePath = call.getString("filePath", "");
+        ensureService();
+        if (MediaPlaybackService.instance != null && !filePath.isEmpty()) {
+            MediaPlaybackService.instance.nativePlayFile(filePath);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void nativePause(PluginCall call) {
+        ensureService();
+        if (MediaPlaybackService.instance != null) {
+            MediaPlaybackService.instance.nativePause();
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void nativeResume(PluginCall call) {
+        ensureService();
+        if (MediaPlaybackService.instance != null) {
+            MediaPlaybackService.instance.nativeResume();
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void nativeSeek(PluginCall call) {
+        double positionSec = call.getDouble("position", 0.0);
+        ensureService();
+        if (MediaPlaybackService.instance != null) {
+            MediaPlaybackService.instance.nativeSeekTo((int)(positionSec * 1000));
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void nativeSetVolume(PluginCall call) {
+        double volume = call.getDouble("volume", 1.0);
+        ensureService();
+        if (MediaPlaybackService.instance != null) {
+            MediaPlaybackService.instance.nativeSetVolume((float) volume);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
     public void updateMediaTree(PluginCall call) {
         ensureService();
         if (MediaPlaybackService.instance == null) { call.resolve(); return; }
@@ -127,6 +175,9 @@ public class MediaSessionPlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
+        if (MediaPlaybackService.instance != null) {
+            MediaPlaybackService.instance.nativeStop();
+        }
         getContext().stopService(new Intent(getContext(), MediaPlaybackService.class));
         serviceStarted = false;
         call.resolve();
@@ -154,5 +205,13 @@ public class MediaSessionPlugin extends Plugin {
             js += ",'" + playlist.replace("\\", "\\\\").replace("'", "\\'") + "'";
         }
         evalJs(js + ")");
+    }
+
+    static void sendNativeEvent(String event, long value) {
+        evalJs("window._nativeAudioEvent('" + event + "'," + value + ")");
+    }
+
+    static void sendNativeEvent(String event, long value1, long value2) {
+        evalJs("window._nativeAudioEvent('" + event + "'," + value1 + "," + value2 + ")");
     }
 }
