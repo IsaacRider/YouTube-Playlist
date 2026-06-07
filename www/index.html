@@ -744,16 +744,16 @@ const ClientYT = {
   async getAudioUrl(videoId) {
     let lastError = '';
 
-    // Try Innertube mobile clients via googleapis endpoint
-    for (const pc of this._playerClients) {
+    // Build attempts: each client with its UA, then IOS without custom UA
+    const attempts = this._playerClients.map(pc => ({ ...pc, useUA: true }));
+    attempts.push({ ...this._playerClients[0], useUA: false });
+
+    for (const pc of attempts) {
       try {
-        const name = pc.context.client.clientName;
+        const name = pc.context.client.clientName + (pc.useUA ? '' : ' (native UA)');
         const endpoint = pc.mobile ? this.MOBILE_API : this.WEB_API;
-        const headers = {
-          'Content-Type': 'application/json',
-          'User-Agent': pc.ua,
-          'X-Goog-Api-Format-Version': '2'
-        };
+        const headers = { 'Content-Type': 'application/json', 'X-Goog-Api-Format-Version': '2' };
+        if (pc.useUA) headers['User-Agent'] = pc.ua;
         const r = await nativePost(endpoint + '/player', headers, { context: pc.context, videoId });
         if (r.status < 200 || r.status >= 300) {
           const errBody = typeof r.data === 'object' ? JSON.stringify(r.data).substring(0, 200) : String(r.data || '').substring(0, 200);
@@ -774,9 +774,9 @@ const ClientYT = {
         if (!preferred) { lastError = name + ': no audio stream with direct URL'; continue; }
         const title = data?.videoDetails?.title || videoId;
         const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
-        return { url: preferred.url, title, duration, mimeType: preferred.mimeType, ua: pc.ua };
+        return { url: preferred.url, title, duration, mimeType: preferred.mimeType, ua: pc.useUA ? pc.ua : null };
       } catch (e) {
-        lastError = pc.context.client.clientName + ': ' + e.message;
+        lastError = (pc.context.client.clientName) + ': ' + e.message;
       }
     }
 
@@ -840,11 +840,27 @@ const ClientYT = {
 
     if (IS_NATIVE) {
       await ensureMusicDir();
-      await getFS().downloadFile({
-        url: info.url,
-        path: MUSIC_DIR + '/' + filename,
-        directory: 'DATA'
-      });
+      const dlHeaders = {};
+      if (info.ua) dlHeaders['User-Agent'] = info.ua;
+      try {
+        await getFS().downloadFile({
+          url: info.url,
+          path: MUSIC_DIR + '/' + filename,
+          directory: 'DATA',
+          headers: dlHeaders
+        });
+      } catch (e1) {
+        // Fallback: try without custom UA (CDN may want the real device UA)
+        try {
+          await getFS().downloadFile({
+            url: info.url,
+            path: MUSIC_DIR + '/' + filename,
+            directory: 'DATA'
+          });
+        } catch (e2) {
+          throw new Error('CDN download failed: ' + (e2.message || e1.message));
+        }
+      }
     } else {
       const resp = await fetch(info.url);
       if (!resp.ok) throw new Error('Download failed: HTTP ' + resp.status);
