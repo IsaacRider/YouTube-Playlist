@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.5</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.6</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -1060,15 +1060,7 @@ async function loadTracks() {
   syncMediaTree();
 }
 
-function updateLibraryStats(bytes) {
-  const el = document.getElementById('libraryStats');
-  if (!tracks.length) { el.textContent = ''; return; }
-  let size;
-  if (bytes >= 1073741824) size = (bytes / 1073741824).toFixed(1) + ' GB';
-  else if (bytes >= 1048576) size = (bytes / 1048576).toFixed(0) + ' MB';
-  else size = (bytes / 1024).toFixed(0) + ' KB';
-  el.textContent = `${tracks.length} tracks - ${size}`;
-}
+function updateLibraryStats() {}
 
 function rebuildOrder() {
   const source = activePlaylist ? getPlaylistTracks(activePlaylist) : tracks;
