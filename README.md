@@ -4,16 +4,20 @@ A free, offline music player for Android. Download songs from YouTube and listen
 
 ## Download
 
-1. Go to the [Releases](https://github.com/IsaacRider/YouTube-Playlist/releases) page
-2. Download the latest APK file
-3. Open the APK on your Android phone to install it
+1. Go to the [Actions](https://github.com/IsaacRider/YouTube-Playlist/actions) tab
+2. Open the latest successful build
+3. Download the APK from the build artifacts
+4. Open the APK on your Android phone to install it
 
 > If prompted, allow installation from unknown sources in your phone's settings.
 
-## Setup
+## Features
 
-1. Open the app
-2. Enter your server address when prompted (e.g. `http://192.168.1.100:8888`)
-3. Start adding music by pasting YouTube URLs or searching for songs
-
-Once tracks are downloaded, they play offline without the server.
+- **YouTube Downloads** - Paste a YouTube link or search for songs to download as MP3
+- **Spotify Import** - Paste a Spotify playlist link to download all tracks (any playlist size)
+- **Offline Playback** - All music is saved to your phone and plays without internet
+- **Playlists** - Create and manage playlists, or auto-sort by genre
+- **Background Playback** - Keep listening with notification controls (play, skip, previous)
+- **Shuffle** - Shuffle within a playlist or across all tracks
+- **Volume Boost** - Boost volume up to 150%
+- **Bluetooth Auto-Resume** - Music resumes when you connect Bluetooth headphones or speakers
