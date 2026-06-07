@@ -240,7 +240,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v3.1</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.0</div>
         <div class="library-stats" id="libraryStats"></div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
@@ -662,6 +662,8 @@ document.getElementById('updateBtn').addEventListener('click', () => {
 });
 
 // --- Client-side YouTube (standalone, no server needed) ---
+const NativeYT = IS_NATIVE ? window.Capacitor?.Plugins?.YouTubeExtractor : null;
+
 const PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.leptons.xyz',
@@ -720,6 +722,13 @@ const ClientYT = {
   ],
 
   async search(query) {
+    if (NativeYT) {
+      const r = await NativeYT.search({ query });
+      return (r.results || []).map(v => ({
+        title: v.title, id: v.id, url: v.url,
+        duration: v.duration ? Math.floor(v.duration / 60) + ':' + String(v.duration % 60).padStart(2, '0') : ''
+      }));
+    }
     const r = await nativePost(this.WEB_API + '/search?key=' + this.INNERTUBE_KEY,
       { 'Content-Type': 'application/json' },
       { context: this._webContext, query }
@@ -835,57 +844,32 @@ const ClientYT = {
   },
 
   async download(videoId, displayTitle) {
+    if (NativeYT) {
+      const r = await NativeYT.download({ videoId, title: displayTitle || '' });
+      const filename = r.filename;
+      if (!tracks.includes(filename)) {
+        tracks.unshift(filename);
+        localStorage.setItem('tracks', JSON.stringify(tracks));
+      }
+      const meta = JSON.parse(localStorage.getItem('metadata') || '{}');
+      meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId };
+      localStorage.setItem('metadata', JSON.stringify(meta));
+      metadata = meta;
+      return { filename, title: r.title };
+    }
+
     const info = await this.getAudioUrl(videoId);
     const filename = (displayTitle || info.title).replace(/[<>:"/\\|?*]/g, '') + '.mp3';
 
-    if (IS_NATIVE) {
-      await ensureMusicDir();
-      const CHROME_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36';
-      const uas = [info.ua, CHROME_UA, null].filter((v, i, a) => a.indexOf(v) === i);
-      let lastErr;
-      for (const ua of uas) {
-        try {
-          const h = ua ? { 'User-Agent': ua } : {};
-          await getFS().downloadFile({
-            url: info.url,
-            path: MUSIC_DIR + '/' + filename,
-            directory: 'DATA',
-            headers: h
-          });
-          lastErr = null;
-          break;
-        } catch (e) { lastErr = e; }
-      }
-      if (lastErr) {
-        // Final fallback: download via CapacitorHttp and write manually
-        const r = await getHttp().get({
-          url: info.url,
-          headers: { 'User-Agent': CHROME_UA },
-          responseType: 'blob'
-        });
-        if (r.status < 200 || r.status >= 300) throw new Error('CDN download failed: HTTP ' + r.status);
-        if (r.data) {
-          await getFS().writeFile({
-            path: MUSIC_DIR + '/' + filename,
-            directory: 'DATA',
-            data: typeof r.data === 'string' ? r.data : btoa(String.fromCharCode(...new Uint8Array(r.data)))
-          });
-        } else {
-          throw new Error('CDN download failed: empty response');
-        }
-      }
-    } else {
-      const resp = await fetch(info.url);
-      if (!resp.ok) throw new Error('Download failed: HTTP ' + resp.status);
-      const buffer = await resp.arrayBuffer();
-      try {
-        const cache = await caches.open('music-v5');
-        const blob = new Blob([buffer], { type: 'audio/mpeg' });
-        await cache.put('/' + encodeURI(filename), new Response(blob));
-      } catch (e) { throw new Error('Failed to cache: ' + e.message); }
-    }
+    const resp = await fetch(info.url);
+    if (!resp.ok) throw new Error('Download failed: HTTP ' + resp.status);
+    const buffer = await resp.arrayBuffer();
+    try {
+      const cache = await caches.open('music-v5');
+      const blob = new Blob([buffer], { type: 'audio/mpeg' });
+      await cache.put('/' + encodeURI(filename), new Response(blob));
+    } catch (e) { throw new Error('Failed to cache: ' + e.message); }
 
-    // Add to tracks list and metadata
     if (!tracks.includes(filename)) {
       tracks.unshift(filename);
       localStorage.setItem('tracks', JSON.stringify(tracks));
