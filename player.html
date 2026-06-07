@@ -2081,7 +2081,11 @@ function promptPlaylistName(defaultName, trackFiles) {
 }
 
 function extractVideoId(url) {
-  const m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/) || url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  url = url.trim();
+  const m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/)
+    || url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/)
+    || url.match(/\/(?:shorts|embed|v|e)\/([a-zA-Z0-9_-]{11})/)
+    || url.match(/^([a-zA-Z0-9_-]{11})$/);
   return m ? m[1] : null;
 }
 
