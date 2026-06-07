@@ -806,7 +806,7 @@ async function loadTracks() {
     try {
       const r = await fetch(serverUrl + '/api/tracks');
       const data = await r.json();
-      tracks = data.tracks;
+      tracks = data.tracks || [];
       localStorage.setItem('tracks', JSON.stringify(tracks));
       if (data.sizes) {
         totalBytes = Object.values(data.sizes).reduce((a, b) => a + b, 0);
@@ -917,6 +917,10 @@ function parseTrack(t) {
 
 function trackName(t) { return parseTrack(t).display; }
 
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function renderPlaylist() {
   const source = activePlaylist ? getPlaylistTracks(activePlaylist) : tracks;
   const query = (document.getElementById('allTracksSearch').value || '').toLowerCase();
@@ -929,11 +933,11 @@ function renderPlaylist() {
     const rowNum = total - i;
     return `<div class="track ${currentFilename === t ? 'active' : ''}" data-i="${i}" data-file="${encodeURIComponent(t)}">` +
       `<span class="track-num">${rowNum}</span>` +
-      `<div class="track-info"><div class="track-title">${p.title || p.display}</div>` +
-      (p.artist ? `<div class="track-artist">${p.artist}</div>` : '') +
+      `<div class="track-info"><div class="track-title">${esc(p.title || p.display)}</div>` +
+      (p.artist ? `<div class="track-artist">${esc(p.artist)}</div>` : '') +
       `</div>` +
       `<div class="track-btns">` +
-      (ytUrl ? `<span class="track-yt" data-url="${ytUrl}" title="Copy YouTube link">YT</span>` : '') +
+      (ytUrl ? `<span class="track-yt" data-url="${esc(ytUrl)}" title="Copy YouTube link">YT</span>` : '') +
       `<span class="track-actions" data-track="${encodeURIComponent(t)}" title="Add to playlist">+</span>` +
       `<span class="track-delete" data-track="${encodeURIComponent(t)}" title="Delete song">✕</span>` +
       `</div>` +
@@ -976,6 +980,7 @@ function renderPlaylist() {
 }
 
 async function deleteTrack(filename) {
+  if (!confirm(`Delete "${parseTrack(filename).display}"?`)) return;
   // Remove from server
   if (isOnline) {
     try {
@@ -1385,7 +1390,7 @@ function renderPlaylistCards() {
     const count = getPlaylistTracks(name).length;
     return `<div class="pl-card ${activePlaylist === name ? 'active' : ''}" data-pl="${encodeURIComponent(name)}">
       <div class="pl-card-info">
-        <div class="pl-card-name">${name}</div>
+        <div class="pl-card-name">${esc(name)}</div>
         <div class="pl-card-count">${count} track${count !== 1 ? 's' : ''}</div>
       </div>
       <div class="pl-card-actions">
@@ -1441,8 +1446,8 @@ function renderPlaylistDetail() {
     const rowNum = plTotal - i;
     return `<div class="track ${currentFilename === t ? 'active' : ''}" data-i="${i}" data-file="${encodeURIComponent(t)}">
       <span class="track-num">${rowNum}</span>
-      <div class="track-info"><div class="track-title">${p.title || p.display}</div>` +
-      (p.artist ? `<div class="track-artist">${p.artist}</div>` : '') +
+      <div class="track-info"><div class="track-title">${esc(p.title || p.display)}</div>` +
+      (p.artist ? `<div class="track-artist">${esc(p.artist)}</div>` : '') +
       `</div>
       <span class="track-actions remove-from-pl" data-track="${encodeURIComponent(t)}" title="Remove">✕</span>
       ${cachedTracks.has(t) ? '<span class="track-cached">●</span>' : ''}
@@ -1579,6 +1584,13 @@ document.getElementById('plRenameBtn').addEventListener('click', () => {
 // --- Suggest Playlists ---
 document.getElementById('suggestBtn').addEventListener('click', async () => {
   if (!tracks.length) return;
+  if (!isOnline) {
+    const status = document.getElementById('dlStatus');
+    status.className = 'dl-status error';
+    status.textContent = 'Genre analysis requires the Mac server';
+    setTimeout(() => { status.textContent = ''; }, 4000);
+    return;
+  }
   const btn = document.getElementById('suggestBtn');
   const modal = document.getElementById('suggestModal');
   const content = document.getElementById('suggestContent');
@@ -1611,14 +1623,14 @@ document.getElementById('suggestBtn').addEventListener('click', async () => {
         return `<div class="suggest-genre">
           <div class="suggest-genre-header">
             <div>
-              <div class="suggest-genre-name">${genre}</div>
+              <div class="suggest-genre-name">${esc(genre)}</div>
               <div class="suggest-genre-count">${trackList.length} track${trackList.length > 1 ? 's' : ''}</div>
             </div>
             <div class="suggest-genre-actions">
-              <button class="suggest-create-btn" data-genre="${genre}" ${exists ? 'disabled title="Already exists"' : ''}>${exists ? 'Exists' : 'Create Playlist'}</button>
+              <button class="suggest-create-btn" data-genre="${esc(genre)}" ${exists ? 'disabled title="Already exists"' : ''}>${exists ? 'Exists' : 'Create Playlist'}</button>
             </div>
           </div>
-          <div class="suggest-tracks">${trackList.map(t => `<div>${t.replace('.mp3', '')}</div>`).join('')}</div>
+          <div class="suggest-tracks">${trackList.map(t => `<div>${esc(t.replace('.mp3', ''))}</div>`).join('')}</div>
         </div>`;
       }).join('');
 
@@ -1667,7 +1679,7 @@ function showAddSongsModal(plName, filter) {
     const inPl = plTracks.includes(t);
     return `<div class="modal-item" data-track="${encodeURIComponent(t)}">
       <span class="check">${inPl ? '✓' : ''}</span>
-      <span>${trackName(t)}</span>
+      <span>${esc(trackName(t))}</span>
     </div>`;
   }).join('');
 
@@ -1724,7 +1736,7 @@ function showAddToPlaylistModal(filename) {
       const inPl = (playlists[name] || []).includes(filename);
       return `<div class="modal-item" data-pl="${encodeURIComponent(name)}">
         <span class="check">${inPl ? '✓' : ''}</span>
-        <span>${name}</span>
+        <span>${esc(name)}</span>
       </div>`;
     }).join('');
 
@@ -2217,49 +2229,60 @@ document.getElementById('folderInput').addEventListener('change', (e) => {
 });
 
 async function uploadFiles(files, playlistName) {
-  if (!isOnline) return;
   const status = document.getElementById('dlStatus');
   const queue = document.getElementById('dlQueue');
   status.className = 'dl-status';
-  status.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`;
-
-  const formData = new FormData();
-  for (const f of files) {
-    formData.append('files', f, f.name);
-  }
-  if (playlistName) {
-    formData.append('playlist', playlistName);
-  }
+  status.textContent = `Adding ${files.length} file${files.length > 1 ? 's' : ''}...`;
 
   const item = document.createElement('div');
   item.className = 'dl-queue-item';
-  item.innerHTML = `<span class="dl-queue-title">Uploading ${files.length} MP3${files.length > 1 ? 's' : ''}${playlistName ? ' → ' + playlistName : ''}</span><span class="dl-queue-status active">Uploading...</span>`;
+  item.innerHTML = `<span class="dl-queue-title">Adding ${files.length} MP3${files.length > 1 ? 's' : ''}${playlistName ? ' → ' + esc(playlistName) : ''}</span><span class="dl-queue-status active">Processing...</span>`;
   queue.prepend(item);
 
   try {
-    const r = await fetch(serverUrl + '/api/upload', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await r.json();
-    if (data.ok) {
+    if (isOnline) {
+      const formData = new FormData();
+      for (const f of files) formData.append('files', f, f.name);
+      if (playlistName) formData.append('playlist', playlistName);
+      const r = await fetch(serverUrl + '/api/upload', { method: 'POST', body: formData });
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || 'Upload failed');
       status.className = 'dl-status success';
-      status.textContent = `Uploaded ${data.added} track${data.added > 1 ? 's' : ''}!` + (data.playlist ? ` → ${data.playlist}` : '');
-      item.querySelector('.dl-queue-status').textContent = '✓ Done';
-      item.querySelector('.dl-queue-status').className = 'dl-queue-status done';
-      playDownloadSound();
-      await loadTracks();
-      await loadPlaylists();
-      if (viewingPlaylist) renderPlaylistDetail();
+      status.textContent = `Added ${data.added} track${data.added > 1 ? 's' : ''}!` + (data.playlist ? ` → ${data.playlist}` : '');
     } else {
-      status.className = 'dl-status error';
-      status.textContent = data.error || 'Upload failed';
-      item.querySelector('.dl-queue-status').textContent = 'Failed';
-      item.querySelector('.dl-queue-status').className = 'dl-queue-status error';
+      const addedFiles = [];
+      for (const f of files) {
+        if (!f.name.toLowerCase().endsWith('.mp3')) continue;
+        const buf = await f.arrayBuffer();
+        if (IS_NATIVE) {
+          await saveTrackNative(f.name, buf);
+        } else {
+          const cache = await caches.open('music-v5');
+          await cache.put('/' + encodeURI(f.name), new Response(new Blob([buf], { type: 'audio/mpeg' })));
+        }
+        if (!tracks.includes(f.name)) tracks.unshift(f.name);
+        addedFiles.push(f.name);
+      }
+      localStorage.setItem('tracks', JSON.stringify(tracks));
+      if (playlistName && addedFiles.length) {
+        const existing = playlists[playlistName] || [];
+        const merged = [...existing, ...addedFiles.filter(f => !existing.includes(f))];
+        await savePlaylist(playlistName, merged);
+      }
+      status.className = 'dl-status success';
+      status.textContent = `Added ${addedFiles.length} track${addedFiles.length !== 1 ? 's' : ''}!`;
     }
+    item.querySelector('.dl-queue-status').textContent = '✓ Done';
+    item.querySelector('.dl-queue-status').className = 'dl-queue-status done';
+    playDownloadSound();
+    rebuildOrder();
+    await updateCachedStatus();
+    renderPlaylist();
+    if (viewingPlaylist) renderPlaylistDetail();
+    renderPlaylistCards();
   } catch (e) {
     status.className = 'dl-status error';
-    status.textContent = 'Upload error';
+    status.textContent = e.message || 'Failed to add files';
     item.querySelector('.dl-queue-status').textContent = 'Error';
     item.querySelector('.dl-queue-status').className = 'dl-queue-status error';
   }
@@ -2271,39 +2294,56 @@ document.getElementById('menuDeleteAll').addEventListener('click', async () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
   if (!confirm('Delete ALL tracks, playlists, and metadata? This cannot be undone.')) return;
   if (!confirm('Are you really sure? Everything will be permanently deleted.')) return;
+
+  if (isOnline) {
+    try { await fetch(serverUrl + '/api/tracks/all', { method: 'DELETE' }); } catch (_) {}
+  }
+
+  audio.pause();
+  loaded = false;
+  currentFilename = null;
+  activePlaylist = null;
+  viewingPlaylist = null;
+  playlists = {};
+  metadata = {};
+  tracks = [];
+  localStorage.removeItem('playlists');
+  localStorage.removeItem('tracks');
+  localStorage.removeItem('playerState');
+  localStorage.removeItem('metadata');
+  localStorage.removeItem('librarySize');
+
+  if (IS_NATIVE) {
+    try {
+      const files = await listCachedTracksNative();
+      for (const f of files) await deleteTrackNative(f);
+    } catch (_) {}
+  }
   try {
-    const r = await fetch(serverUrl + '/api/tracks/all', { method: 'DELETE' });
-    const data = await r.json();
-    if (data.ok) {
-      audio.pause();
-      loaded = false;
-      currentFilename = null;
-      activePlaylist = null;
-      viewingPlaylist = null;
-      playlists = {};
-      metadata = {};
-      localStorage.removeItem('playlists');
-      localStorage.removeItem('tracks');
-      localStorage.removeItem('playerState');
-      localStorage.removeItem('metadata');
-      try {
-        const cache = await caches.open('music-v5');
-        const keys = await cache.keys();
-        for (const req of keys) {
-          if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
-        }
-      } catch (_) {}
-      await loadTracks();
-      await loadPlaylists();
-      renderPlaylistCards();
+    const cache = await caches.open('music-v5');
+    const keys = await cache.keys();
+    for (const req of keys) {
+      if (new URL(req.url).pathname.endsWith('.mp3')) await cache.delete(req);
     }
   } catch (_) {}
+
+  cachedTracks = new Set();
+  document.getElementById('nowPlaying').textContent = 'Tap a track to play';
+  document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
+  rebuildOrder();
+  renderPlaylist();
+  renderPlaylistCards();
 });
 
 document.getElementById('menuExport').addEventListener('click', () => {
   document.getElementById('hamburgerMenu').classList.remove('visible');
-  if (!isOnline) return;
   const status = document.getElementById('dlStatus');
+  if (!isOnline) {
+    status.className = 'dl-status error';
+    status.textContent = 'Export requires the Mac server';
+    setTimeout(() => { status.textContent = ''; }, 4000);
+    return;
+  }
   status.className = 'dl-status';
   status.textContent = 'Preparing export...';
   window.location.href = serverUrl + '/export-all';
@@ -2466,7 +2506,7 @@ function addToDownloadQueue(title, url, videoId) {
   const item = document.createElement('div');
   item.className = 'dl-queue-item';
   item.id = 'dlq-' + id;
-  item.innerHTML = `<span class="dl-queue-title">${title}</span><span class="dl-queue-status active">Downloading...</span>`;
+  item.innerHTML = `<span class="dl-queue-title">${esc(title)}</span><span class="dl-queue-status active">Downloading...</span>`;
   queue.prepend(item);
 
   // Close search modal
@@ -2555,19 +2595,7 @@ async function loadMetadata() {
 }
 
 async function checkForAppUpdate() {
-  if (!serverUrl) return;
-  // When server is available, load the latest version from it directly.
-  // Capacitor's native bridge stays active even after navigating to a server URL.
-  // The bundled version is only used when offline.
-  if (!location.href.includes(serverUrl)) {
-    try {
-      const r = await fetch(serverUrl + '/player.html', { signal: AbortSignal.timeout(3000) });
-      if (r.ok) {
-        window.location.href = serverUrl + '/player.html';
-        return;
-      }
-    } catch (_) {}
-  }
+  // App runs standalone — no server redirect needed
 }
 
 async function init() {
