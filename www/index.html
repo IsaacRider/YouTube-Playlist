@@ -840,25 +840,38 @@ const ClientYT = {
 
     if (IS_NATIVE) {
       await ensureMusicDir();
-      const dlHeaders = {};
-      if (info.ua) dlHeaders['User-Agent'] = info.ua;
-      try {
-        await getFS().downloadFile({
-          url: info.url,
-          path: MUSIC_DIR + '/' + filename,
-          directory: 'DATA',
-          headers: dlHeaders
-        });
-      } catch (e1) {
-        // Fallback: try without custom UA (CDN may want the real device UA)
+      const CHROME_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36';
+      const uas = [info.ua, CHROME_UA, null].filter((v, i, a) => a.indexOf(v) === i);
+      let lastErr;
+      for (const ua of uas) {
         try {
+          const h = ua ? { 'User-Agent': ua } : {};
           await getFS().downloadFile({
             url: info.url,
             path: MUSIC_DIR + '/' + filename,
-            directory: 'DATA'
+            directory: 'DATA',
+            headers: h
           });
-        } catch (e2) {
-          throw new Error('CDN download failed: ' + (e2.message || e1.message));
+          lastErr = null;
+          break;
+        } catch (e) { lastErr = e; }
+      }
+      if (lastErr) {
+        // Final fallback: download via CapacitorHttp and write manually
+        const r = await getHttp().get({
+          url: info.url,
+          headers: { 'User-Agent': CHROME_UA },
+          responseType: 'blob'
+        });
+        if (r.status < 200 || r.status >= 300) throw new Error('CDN download failed: HTTP ' + r.status);
+        if (r.data) {
+          await getFS().writeFile({
+            path: MUSIC_DIR + '/' + filename,
+            directory: 'DATA',
+            data: typeof r.data === 'string' ? r.data : btoa(String.fromCharCode(...new Uint8Array(r.data)))
+          });
+        } else {
+          throw new Error('CDN download failed: empty response');
         }
       }
     } else {
