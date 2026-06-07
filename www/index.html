@@ -838,13 +838,17 @@ const ClientYT = {
     const info = await this.getAudioUrl(videoId);
     const filename = (displayTitle || info.title).replace(/[<>:"/\\|?*]/g, '') + '.mp3';
 
-    const dlHeaders = {};
-    if (info.ua) dlHeaders['User-Agent'] = info.ua;
-    const buffer = await nativeDownloadToFile(info.url, filename, dlHeaders);
-
     if (IS_NATIVE) {
-      await saveTrackNative(filename, buffer);
+      await ensureMusicDir();
+      await getFS().downloadFile({
+        url: info.url,
+        path: MUSIC_DIR + '/' + filename,
+        directory: 'DATA'
+      });
     } else {
+      const resp = await fetch(info.url);
+      if (!resp.ok) throw new Error('Download failed: HTTP ' + resp.status);
+      const buffer = await resp.arrayBuffer();
       try {
         const cache = await caches.open('music-v5');
         const blob = new Blob([buffer], { type: 'audio/mpeg' });
