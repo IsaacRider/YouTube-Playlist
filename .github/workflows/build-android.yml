@@ -29,12 +29,20 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Build Release APK
+      - name: Build Debug APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleRelease
+        run: chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Sign APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk MSE.apk
+          # Re-align and sign for clean install
+          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/zipalign -f 4 MSE.apk MSE-aligned.apk
+          keytool -genkeypair -v -keystore release.keystore -alias mse -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=MSE"
+          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner sign --ks release.keystore --ks-pass pass:android --key-pass pass:android --out MSE-signed.apk MSE-aligned.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: MSE
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: MSE-signed.apk
