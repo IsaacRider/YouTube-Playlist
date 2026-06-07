@@ -6,6 +6,9 @@
     "allowNavigation": ["*"]
   },
   "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
     "Filesystem": {
       "requestPermissions": true
     }
