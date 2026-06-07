@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.2</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.3</div>
         <div class="library-stats" id="libraryStats"></div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
@@ -458,23 +458,20 @@ const NativeMediaSession = (() => {
   const plugin = window.Capacitor?.Plugins?.MediaSession;
   if (!plugin) return null;
 
-  window.addEventListener('mediaAction', (event) => {
-    const action = event.action;
+  window._mediaAction = function(action, seekTime, filename, playlist) {
     switch (action) {
       case 'play': audio.play().catch(() => {}); break;
       case 'pause': audio.pause(); break;
       case 'nexttrack': nextTrack(); break;
       case 'previoustrack': prevTrack(); break;
       case 'seekto':
-        if (event.seekTime != null && audio.duration) {
-          audio.currentTime = event.seekTime;
-        }
+        if (seekTime != null && audio.duration) audio.currentTime = seekTime;
         break;
       case 'playTrack':
-        if (event.filename) playSpecificTrack(event.filename, event.playlist || null);
+        if (filename) playSpecificTrack(filename, playlist || null);
         break;
     }
-  });
+  };
 
   return {
     updateMetadata(title, artist, album) {

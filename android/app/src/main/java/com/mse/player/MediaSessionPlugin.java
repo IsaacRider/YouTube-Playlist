@@ -132,26 +132,27 @@ public class MediaSessionPlugin extends Plugin {
         call.resolve();
     }
 
+    private static void evalJs(String js) {
+        if (instance == null || instance.getBridge() == null) return;
+        android.webkit.WebView wv = instance.getBridge().getWebView();
+        if (wv == null) return;
+        wv.post(() -> wv.evaluateJavascript(js, null));
+    }
+
     static void sendAction(String action) {
-        if (instance != null && instance.getBridge() != null) {
-            String js = "{\"action\":\"" + action + "\"}";
-            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
-        }
+        evalJs("window._mediaAction('" + action + "')");
     }
 
     static void sendSeek(double seconds) {
-        if (instance != null && instance.getBridge() != null) {
-            String js = "{\"action\":\"seekto\",\"seekTime\":" + seconds + "}";
-            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
-        }
+        evalJs("window._mediaAction('seekto'," + seconds + ")");
     }
 
     static void sendPlayTrack(String filename, String playlist) {
-        if (instance != null && instance.getBridge() != null) {
-            String escaped = filename.replace("\\", "\\\\").replace("\"", "\\\"");
-            String js = "{\"action\":\"playTrack\",\"filename\":\"" + escaped + "\"" +
-                (playlist != null ? ",\"playlist\":\"" + playlist.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" : "") + "}";
-            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
+        String escaped = filename.replace("\\", "\\\\").replace("'", "\\'");
+        String js = "window._mediaAction('playTrack',null,'" + escaped + "'";
+        if (playlist != null) {
+            js += ",'" + playlist.replace("\\", "\\\\").replace("'", "\\'") + "'";
         }
+        evalJs(js + ")");
     }
 }
