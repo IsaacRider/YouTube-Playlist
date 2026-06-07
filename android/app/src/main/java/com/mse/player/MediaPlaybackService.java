@@ -4,17 +4,30 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Intent;
-import android.os.Build;
-import android.os.IBinder;
+import android.media.AudioDeviceCallback;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaDescriptionCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.media.MediaBrowserServiceCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
-public class MediaPlaybackService extends Service {
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     private static final String CHANNEL_ID = "mse_playback";
     private static final int NOTIFICATION_ID = 1;
@@ -29,6 +42,10 @@ public class MediaPlaybackService extends Service {
     private long duration = 0;
     private long position = 0;
 
+    private List<String> allTracks = new ArrayList<>();
+    private Map<String, List<String>> playlistsMap = new LinkedHashMap<>();
+    private String browsingPlaylist = null;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -36,6 +53,7 @@ public class MediaPlaybackService extends Service {
         createNotificationChannel();
 
         mediaSession = new MediaSessionCompat(this, "MSEPlayer");
+        setSessionToken(mediaSession.getSessionToken());
         mediaSession.setActive(true);
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -62,9 +80,36 @@ public class MediaPlaybackService extends Service {
             public void onSeekTo(long pos) {
                 MediaSessionPlugin.sendSeek(pos / 1000.0);
             }
+
+            @Override
+            public void onPlayFromMediaId(String mediaId, Bundle extras) {
+                if (mediaId != null && mediaId.startsWith("track:")) {
+                    String filename = mediaId.substring(6);
+                    MediaSessionPlugin.sendPlayTrack(filename, browsingPlaylist);
+                }
+            }
         });
 
         showInitialNotification();
+        registerBluetoothAutoResume();
+    }
+
+    private void registerBluetoothAutoResume() {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null) return;
+        am.registerAudioDeviceCallback(new AudioDeviceCallback() {
+            @Override
+            public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
+                for (AudioDeviceInfo d : addedDevices) {
+                    if (d.isSink() && d.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
+                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                            if (!isPlaying) MediaSessionPlugin.sendAction("play");
+                        }, 1500);
+                        break;
+                    }
+                }
+            }
+        }, new Handler(Looper.getMainLooper()));
     }
 
     private void showInitialNotification() {
@@ -87,6 +132,104 @@ public class MediaPlaybackService extends Service {
         startForeground(NOTIFICATION_ID, notification);
     }
 
+    // --- MediaBrowserService ---
+
+    @Nullable
+    @Override
+    public BrowserRoot onGetRoot(@NonNull String clientPackageName, int clientUid, @Nullable Bundle rootHints) {
+        return new BrowserRoot("root", null);
+    }
+
+    @Override
+    public void onLoadChildren(@NonNull String parentId, @NonNull Result<List<MediaBrowserCompat.MediaItem>> result) {
+        List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+
+        switch (parentId) {
+            case "root":
+                items.add(makeBrowsable("__ALL_TRACKS__", "All Tracks",
+                        allTracks.size() + " tracks"));
+                items.add(makeBrowsable("__PLAYLISTS__", "Playlists",
+                        playlistsMap.size() + " playlists"));
+                break;
+
+            case "__ALL_TRACKS__":
+                browsingPlaylist = null;
+                for (String track : allTracks) {
+                    String[] parsed = parseTrack(track);
+                    items.add(makePlayable("track:" + track, parsed[1], parsed[0]));
+                }
+                break;
+
+            case "__PLAYLISTS__":
+                for (Map.Entry<String, List<String>> entry : playlistsMap.entrySet()) {
+                    items.add(makeBrowsable("playlist:" + entry.getKey(),
+                            entry.getKey(), entry.getValue().size() + " tracks"));
+                }
+                break;
+
+            default:
+                if (parentId.startsWith("playlist:")) {
+                    String plName = parentId.substring(9);
+                    browsingPlaylist = plName;
+                    List<String> plTracks = playlistsMap.get(plName);
+                    if (plTracks != null) {
+                        for (String track : plTracks) {
+                            String[] parsed = parseTrack(track);
+                            items.add(makePlayable("track:" + track, parsed[1], parsed[0]));
+                        }
+                    }
+                }
+                break;
+        }
+
+        result.sendResult(items);
+    }
+
+    private MediaBrowserCompat.MediaItem makeBrowsable(String id, String title, String subtitle) {
+        MediaDescriptionCompat.Builder desc = new MediaDescriptionCompat.Builder()
+                .setMediaId(id)
+                .setTitle(title);
+        if (subtitle != null) desc.setSubtitle(subtitle);
+        return new MediaBrowserCompat.MediaItem(desc.build(), MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
+    }
+
+    private MediaBrowserCompat.MediaItem makePlayable(String id, String title, String subtitle) {
+        MediaDescriptionCompat.Builder desc = new MediaDescriptionCompat.Builder()
+                .setMediaId(id)
+                .setTitle(title);
+        if (subtitle != null && !subtitle.isEmpty()) desc.setSubtitle(subtitle);
+        return new MediaBrowserCompat.MediaItem(desc.build(), MediaBrowserCompat.MediaItem.FLAG_PLAYABLE);
+    }
+
+    private String[] parseTrack(String filename) {
+        String name = filename.replaceAll("(?i)\\.mp3$", "");
+        name = name.replaceAll("^\\d{1,3}\\s*-\\s*", "");
+        name = name.replaceAll("(?i)\\s*\\(Official\\s*(Music\\s*)?Video\\)", "");
+        name = name.replaceAll("(?i)\\s*\\(Official\\s*Audio(\\s*Video)?\\)", "");
+        name = name.replaceAll("(?i)\\s*\\[Official\\s*(Music\\s*)?Video\\]", "");
+        name = name.replaceAll("(?i)\\s*\\(lyrics?\\)", "");
+        name = name.replaceAll("(?i)\\s*\\[lyrics?\\]", "");
+        name = name.trim();
+        String[] parts = name.split("\\s*(?:--|–|-)\\s+", 2);
+        if (parts.length == 2) {
+            return new String[]{parts[0].trim(), parts[1].trim()};
+        }
+        return new String[]{"", name};
+    }
+
+    void updateMediaTree(List<String> tracks, Map<String, List<String>> playlists) {
+        this.allTracks = tracks != null ? tracks : new ArrayList<>();
+        this.playlistsMap = playlists != null ? playlists : new LinkedHashMap<>();
+        notifyChildrenChanged("root");
+        notifyChildrenChanged("__ALL_TRACKS__");
+        notifyChildrenChanged("__PLAYLISTS__");
+        for (String name : this.playlistsMap.keySet()) {
+            notifyChildrenChanged("playlist:" + name);
+        }
+    }
+
+    // --- Notification / Playback ---
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
@@ -106,11 +249,6 @@ public class MediaPlaybackService extends Service {
             }
         }
         return START_NOT_STICKY;
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
     }
 
     @Override

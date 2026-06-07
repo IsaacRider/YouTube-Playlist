@@ -6,12 +6,21 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @CapacitorPlugin(name = "MediaSession", permissions = {
     @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications")
@@ -80,8 +89,46 @@ public class MediaSessionPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void updateMediaTree(PluginCall call) {
+        ensureService();
+        if (MediaPlaybackService.instance == null) { call.resolve(); return; }
+
+        List<String> tracksList = new ArrayList<>();
+        Map<String, List<String>> playlistsMap = new LinkedHashMap<>();
+
+        try {
+            JSArray tracksArr = call.getArray("tracks");
+            if (tracksArr != null) {
+                for (int i = 0; i < tracksArr.length(); i++) {
+                    tracksList.add(tracksArr.getString(i));
+                }
+            }
+        } catch (Exception e) { /* ignore */ }
+
+        try {
+            JSObject plObj = call.getObject("playlists");
+            if (plObj != null) {
+                Iterator<String> keys = plObj.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    JSONArray arr = plObj.getJSONArray(key);
+                    List<String> pl = new ArrayList<>();
+                    for (int i = 0; i < arr.length(); i++) {
+                        pl.add(arr.getString(i));
+                    }
+                    playlistsMap.put(key, pl);
+                }
+            }
+        } catch (Exception e) { /* ignore */ }
+
+        MediaPlaybackService.instance.updateMediaTree(tracksList, playlistsMap);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void stop(PluginCall call) {
         getContext().stopService(new Intent(getContext(), MediaPlaybackService.class));
+        serviceStarted = false;
         call.resolve();
     }
 
@@ -98,6 +145,16 @@ public class MediaSessionPlugin extends Plugin {
             JSObject data = new JSObject();
             data.put("action", "seekto");
             data.put("seekTime", seconds);
+            instance.notifyListeners("mediaAction", data);
+        }
+    }
+
+    static void sendPlayTrack(String filename, String playlist) {
+        if (instance != null) {
+            JSObject data = new JSObject();
+            data.put("action", "playTrack");
+            data.put("filename", filename);
+            if (playlist != null) data.put("playlist", playlist);
             instance.notifyListeners("mediaAction", data);
         }
     }

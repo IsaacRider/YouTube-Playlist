@@ -133,6 +133,13 @@
   .shuffle-badge { font-size: 11px; padding: 4px 10px; border-radius: 12px; cursor: pointer; }
   .shuffle-on { background: #1db954; color: #000; font-weight: 700; }
   .shuffle-off { background: #333; color: #888; }
+  .queue-badge { font-size: 11px; padding: 4px 10px; border-radius: 12px; background: #f59e0b; color: #000; font-weight: 700; cursor: pointer; display: none; }
+  .queue-badge.visible { display: inline; }
+
+  /* Track context menu */
+  .track-ctx { position: fixed; background: #222; border: 1px solid #333; border-radius: 10px; padding: 4px 0; min-width: 180px; z-index: 35; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+  .track-ctx button { display: block; width: 100%; text-align: left; padding: 11px 16px; background: none; border: none; color: #ccc; font-size: 14px; cursor: pointer; }
+  .track-ctx button:hover { background: #333; color: #eee; }
 
   /* YouTube search modal */
   .yt-search-btn, .upload-btn { padding: 10px 14px; border-radius: 10px; border: none; background: #333; color: #eee; font-weight: 700; font-size: 14px; cursor: pointer; white-space: nowrap; min-width: 44px; min-height: 44px; touch-action: manipulation; -webkit-tap-highlight-color: rgba(29,185,84,0.3); }
@@ -356,6 +363,7 @@
     <button class="bp-play" id="playBtn"><svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
     <button id="nextBtn"><svg viewBox="0 0 24 24"><path d="M16 18h2V6h-2zm-8.5-6l8.5 6V6z" transform="scale(-1,1) translate(-24,0)"/></svg></button>
     <span class="shuffle-badge shuffle-off" id="shuffleBtn">Shuffle</span>
+    <span class="queue-badge" id="queueBadge">Q: 0</span>
   </div>
   <div class="bp-vol">
     <span>🔈</span>
@@ -389,6 +397,9 @@ const NativeMediaSession = (() => {
           audio.currentTime = data.seekTime;
         }
         break;
+      case 'playTrack':
+        if (data.filename) playSpecificTrack(data.filename, data.playlist || null);
+        break;
     }
   });
 
@@ -398,6 +409,9 @@ const NativeMediaSession = (() => {
     },
     updatePlayback(playing, position, duration) {
       plugin.updatePlayback({ playing, position, duration });
+    },
+    updateMediaTree(tracksList, playlistsObj) {
+      plugin.updateMediaTree({ tracks: tracksList, playlists: playlistsObj });
     },
     stop() { plugin.stop(); }
   };
@@ -434,6 +448,7 @@ let metadata = {};
 let activePlaylist = null;
 let viewingPlaylist = null;
 let waitingWorker = null;
+let playQueue = [];
 
 // --- Capacitor Filesystem helpers ---
 function getFS() { return window.Capacitor.Plugins.Filesystem; }
@@ -832,6 +847,7 @@ async function loadTracks() {
   rebuildOrder();
   await updateCachedStatus();
   renderPlaylist();
+  syncMediaTree();
 }
 
 function updateLibraryStats(bytes) {
@@ -938,7 +954,7 @@ function renderPlaylist() {
       `</div>` +
       `<div class="track-btns">` +
       (ytUrl ? `<span class="track-yt" data-url="${esc(ytUrl)}" title="Copy YouTube link">YT</span>` : '') +
-      `<span class="track-actions" data-track="${encodeURIComponent(t)}" title="Add to playlist">+</span>` +
+      `<span class="track-actions" data-track="${encodeURIComponent(t)}" title="More options">⋮</span>` +
       `<span class="track-delete" data-track="${encodeURIComponent(t)}" title="Delete song">✕</span>` +
       `</div>` +
       (cachedTracks.has(t) ? '<span class="track-cached">●</span>' : '') +
@@ -957,7 +973,7 @@ function renderPlaylist() {
   document.getElementById('playlist').querySelectorAll('.track-actions').forEach(el => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      showAddToPlaylistModal(decodeURIComponent(el.dataset.track));
+      showTrackContextMenu(decodeURIComponent(el.dataset.track), e.clientX, e.clientY);
     });
   });
 
@@ -1034,10 +1050,18 @@ function currentSource() {
   return activePlaylist ? getPlaylistTracks(activePlaylist) : tracks;
 }
 
-async function loadAndPlay() {
-  const source = currentSource();
-  const ti = order[idx];
-  const filename = source[ti];
+async function loadAndPlay(specificFile) {
+  let filename;
+  if (specificFile) {
+    filename = specificFile;
+    const source = currentSource();
+    const ti = source.indexOf(filename);
+    if (ti >= 0) idx = order.indexOf(ti);
+  } else {
+    const source = currentSource();
+    const ti = order[idx];
+    filename = source[ti];
+  }
   if (!filename) return;
 
   // Stop current playback cleanly
@@ -1072,11 +1096,28 @@ async function loadAndPlay() {
     } catch (_) {}
   }
 
+  const fromServer = !src;
   if (!src) src = getTrackUrl(filename);
 
   audio.src = src;
   audio.load();
   audio.play().catch(() => {});
+
+  // Auto-cache for offline: if playing from server, save locally in background
+  if (fromServer && isOnline) {
+    fetch(getTrackUrl(filename)).then(r => r.ok ? r.arrayBuffer() : null).then(async buf => {
+      if (!buf) return;
+      if (IS_NATIVE) {
+        await saveTrackNative(filename, buf);
+      } else {
+        try {
+          const cache = await caches.open('music-v5');
+          await cache.put('/' + encodeURI(filename), new Response(new Blob([buf], { type: 'audio/mpeg' })));
+        } catch (_) {}
+      }
+      cachedTracks.add(filename);
+    }).catch(() => {});
+  }
 
   saveState();
 }
@@ -1101,6 +1142,89 @@ function updateMediaSession(filename) {
   if (NativeMediaSession) {
     NativeMediaSession.updateMetadata(title, artist, album);
   }
+}
+
+function playSpecificTrack(filename, playlistName) {
+  if (playlistName && playlists[playlistName]) {
+    activePlaylist = playlistName;
+    viewingPlaylist = playlistName;
+  }
+  rebuildOrder();
+  const source = currentSource();
+  const trackIdx = source.indexOf(filename);
+  if (trackIdx >= 0) {
+    idx = order.indexOf(trackIdx);
+    if (idx === -1) idx = 0;
+    loadAndPlay();
+  }
+}
+
+function playNext(filename) {
+  playQueue = playQueue.filter(f => f !== filename);
+  playQueue.unshift(filename);
+  updateQueueBadge();
+  showToast('Playing next');
+}
+
+function addToQueue(filename) {
+  if (!playQueue.includes(filename)) playQueue.push(filename);
+  updateQueueBadge();
+  showToast('Added to queue');
+}
+
+function updateQueueBadge() {
+  const badge = document.getElementById('queueBadge');
+  if (playQueue.length > 0) {
+    badge.textContent = `Q: ${playQueue.length}`;
+    badge.classList.add('visible');
+  } else {
+    badge.classList.remove('visible');
+  }
+}
+
+function showToast(msg) {
+  const toast = document.getElementById('copiedToast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 1500);
+}
+
+function syncMediaTree() {
+  if (NativeMediaSession) {
+    NativeMediaSession.updateMediaTree(tracks, playlists);
+  }
+}
+
+let activeCtxMenu = null;
+function showTrackContextMenu(filename, x, y) {
+  closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'track-ctx';
+  menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - 180) + 'px';
+
+  const playNextBtn = document.createElement('button');
+  playNextBtn.textContent = 'Play Next';
+  playNextBtn.addEventListener('click', () => { playNext(filename); closeContextMenu(); });
+  menu.appendChild(playNextBtn);
+
+  const queueBtn = document.createElement('button');
+  queueBtn.textContent = 'Add to Queue';
+  queueBtn.addEventListener('click', () => { addToQueue(filename); closeContextMenu(); });
+  menu.appendChild(queueBtn);
+
+  const plBtn = document.createElement('button');
+  plBtn.textContent = 'Add to Playlist...';
+  plBtn.addEventListener('click', () => { showAddToPlaylistModal(filename); closeContextMenu(); });
+  menu.appendChild(plBtn);
+
+  document.body.appendChild(menu);
+  activeCtxMenu = menu;
+  setTimeout(() => document.addEventListener('click', closeContextMenu, { once: true }), 10);
+}
+
+function closeContextMenu() {
+  if (activeCtxMenu) { activeCtxMenu.remove(); activeCtxMenu = null; }
 }
 
 function fmt(s) {
@@ -1146,6 +1270,12 @@ function prevTrack() {
 }
 
 function nextTrack() {
+  if (playQueue.length > 0) {
+    const next = playQueue.shift();
+    updateQueueBadge();
+    loadAndPlay(next);
+    return;
+  }
   if (!currentSource().length) return;
   idx = (idx + 1) % order.length;
   loadAndPlay();
@@ -1159,6 +1289,13 @@ document.getElementById('shuffleBtn').addEventListener('click', () => {
   btn.className = 'shuffle-badge ' + (shuffleOn ? 'shuffle-on' : 'shuffle-off');
   rebuildOrder();
   saveState();
+});
+
+document.getElementById('queueBadge').addEventListener('click', () => {
+  if (playQueue.length && confirm(`Clear queue (${playQueue.length} tracks)?`)) {
+    playQueue = [];
+    updateQueueBadge();
+  }
 });
 
 function saveState() {
@@ -1245,7 +1382,7 @@ function restoreState() {
   } catch (_) {}
 }
 
-audio.addEventListener('ended', () => { idx = (idx + 1) % order.length; loadAndPlay(); });
+audio.addEventListener('ended', () => nextTrack());
 audio.addEventListener('pause', () => {
   document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
   saveState();
@@ -1344,6 +1481,7 @@ async function loadPlaylists() {
     } catch (_) {}
   }
   renderPlaylistCards();
+  syncMediaTree();
 }
 
 async function savePlaylist(name, trackList) {
