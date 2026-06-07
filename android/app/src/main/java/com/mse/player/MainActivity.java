@@ -12,12 +12,23 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
     }
 
-    @Override
-    public void onPause() {
-        super.onPause();
+    private void keepWebViewAlive() {
         WebView wv = getBridge() != null ? getBridge().getWebView() : null;
         if (wv != null) {
             wv.onResume();
+            wv.resumeTimers();
         }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        keepWebViewAlive();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        keepWebViewAlive();
     }
 }

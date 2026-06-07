@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
@@ -11,6 +12,7 @@ import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaDescriptionCompat;
 import android.support.v4.media.MediaMetadataCompat;
@@ -45,12 +47,17 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
     private List<String> allTracks = new ArrayList<>();
     private Map<String, List<String>> playlistsMap = new LinkedHashMap<>();
     private String browsingPlaylist = null;
+    private PowerManager.WakeLock wakeLock;
 
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
         createNotificationChannel();
+
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mse:audio");
+        wakeLock.acquire();
 
         mediaSession = new MediaSessionCompat(this, "MSEPlayer");
         setSessionToken(mediaSession.getSessionToken());
@@ -258,6 +265,9 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     @Override
     public void onDestroy() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();
