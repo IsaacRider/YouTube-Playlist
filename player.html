@@ -128,8 +128,6 @@
   .track-yt:hover { color: #ff0000; }
   .active .track-yt { color: rgba(0,0,0,0.5); }
   .copied-toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #1db954; color: #000; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; z-index: 30; display: none; }
-  .track-cached { font-size: 9px; color: #1db954; }
-  .active .track-cached { color: #000; }
 
   /* Fixed bottom player */
   .bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: #181818; border-top: 1px solid #282828; padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom)); z-index: 10; }
@@ -352,7 +350,10 @@
       <div class="spotify-progress-text" id="spotifyProgressText">0 / 0</div>
     </div>
     <div class="spotify-log" id="spotifyLog"></div>
-    <button class="modal-close" id="spotifyModalClose">Close</button>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="modal-close" id="spotifyPauseBtn" style="flex:1;background:#555;color:#fff;border:none;border-radius:8px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;display:none;">Pause</button>
+      <button class="modal-close" id="spotifyModalClose" style="flex:1;">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1166,10 +1167,9 @@ function renderPlaylist() {
       `</div>` +
       `<div class="track-btns">` +
       (ytUrl ? `<span class="track-yt" data-url="${esc(ytUrl)}" title="Copy YouTube link">YT</span>` : '') +
-      `<span class="track-actions" data-track="${encodeURIComponent(t)}" title="More options">⋮</span>` +
       `<span class="track-delete" data-track="${encodeURIComponent(t)}" title="Delete song">✕</span>` +
       `</div>` +
-      (cachedTracks.has(t) ? '<span class="track-cached">●</span>' : '') +
+      `<span class="track-actions" data-track="${encodeURIComponent(t)}" title="More options">⋮</span>` +
     `</div>`;
   }).join('');
 
@@ -1800,7 +1800,6 @@ function renderPlaylistDetail() {
       (p.artist ? `<div class="track-artist">${esc(p.artist)}</div>` : '') +
       `</div>
       <span class="track-actions remove-from-pl" data-track="${encodeURIComponent(t)}" title="Remove">✕</span>
-      ${cachedTracks.has(t) ? '<span class="track-cached">●</span>' : ''}
     </div>`;
   }).join('');
 
@@ -2310,6 +2309,8 @@ function isAlreadyDownloaded(videoId) {
 
 const spotifyQueue = [];
 let spotifyProcessing = false;
+let spotifyPaused = false;
+let spotifyPauseResolve = null;
 
 function updateSpotifyLogsBtn() {
   const btn = document.getElementById('spotifyLogsBtn');
@@ -2384,6 +2385,7 @@ function renderSpotifyModal() {
 async function processSpotifyQueue() {
   if (spotifyProcessing) return;
   spotifyProcessing = true;
+  document.getElementById('spotifyPauseBtn').style.display = '';
 
   while (spotifyQueue.some(j => !j.done)) {
     const job = spotifyQueue.find(j => !j.done);
@@ -2392,6 +2394,10 @@ async function processSpotifyQueue() {
     renderSpotifyModal();
 
     for (const track of job.tracks) {
+      if (spotifyPaused) {
+        await new Promise(resolve => { spotifyPauseResolve = resolve; });
+        spotifyPauseResolve = null;
+      }
       const entry = { label: `${track.artist} - ${track.name}`, text: 'Downloading...', cls: 'log-active' };
       job.logEntries.unshift(entry);
       renderSpotifyModal();
@@ -2485,6 +2491,11 @@ async function processSpotifyQueue() {
   }
 
   spotifyProcessing = false;
+  spotifyPaused = false;
+  const pauseBtn = document.getElementById('spotifyPauseBtn');
+  pauseBtn.textContent = 'Pause';
+  pauseBtn.style.background = '#555';
+  pauseBtn.style.display = 'none';
 }
 
 async function importSpotifyPlaylist(url) {
@@ -2558,6 +2569,19 @@ async function importSpotifyPlaylist(url) {
 // Spotify modal close
 document.getElementById('spotifyModalClose').addEventListener('click', () => {
   document.getElementById('spotifyModal').classList.remove('visible');
+});
+document.getElementById('spotifyPauseBtn').addEventListener('click', () => {
+  const btn = document.getElementById('spotifyPauseBtn');
+  if (spotifyPaused) {
+    spotifyPaused = false;
+    btn.textContent = 'Pause';
+    btn.style.background = '#555';
+    if (spotifyPauseResolve) spotifyPauseResolve();
+  } else {
+    spotifyPaused = true;
+    btn.textContent = 'Resume';
+    btn.style.background = '#1db954';
+  }
 });
 document.getElementById('spotifyModal').addEventListener('click', (e) => {
   if (e.target === document.getElementById('spotifyModal')) {
