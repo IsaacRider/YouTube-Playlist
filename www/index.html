@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.6</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.7</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -1996,26 +1996,12 @@ async function suggestPlaylistsByGenre(progressCb) {
   return suggestions;
 }
 
-document.getElementById('suggestBtn').addEventListener('click', async () => {
-  if (!tracks.length) return;
-  const btn = document.getElementById('suggestBtn');
-  const modal = document.getElementById('suggestModal');
+let suggestRunning = false;
+let suggestDone = false;
+
+function renderSuggestions(suggestions) {
   const content = document.getElementById('suggestContent');
   const title = document.getElementById('suggestModalTitle');
-
-  btn.textContent = 'Analyzing tracks...';
-  btn.disabled = true;
-  content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Looking up genres for each artist...</div>';
-  title.textContent = 'Analyzing...';
-  modal.classList.add('visible');
-
-  let suggestions = {};
-  try {
-    suggestions = await suggestPlaylistsByGenre((done, total) => {
-      content.innerHTML = `<div style="color:#888;text-align:center;padding:30px;">Looking up genres... ${done}/${total} artists</div>`;
-    });
-  } catch (_) {}
-
   const genres = Object.keys(suggestions);
 
   if (!genres.length) {
@@ -2049,9 +2035,38 @@ document.getElementById('suggestBtn').addEventListener('click', async () => {
       });
     });
   }
+}
 
+document.getElementById('suggestBtn').addEventListener('click', async () => {
+  if (!tracks.length) return;
+  const modal = document.getElementById('suggestModal');
+
+  if (suggestRunning || suggestDone) {
+    modal.classList.add('visible');
+    return;
+  }
+
+  const btn = document.getElementById('suggestBtn');
+  const content = document.getElementById('suggestContent');
+  const title = document.getElementById('suggestModalTitle');
+
+  suggestRunning = true;
+  btn.textContent = 'Analyzing tracks...';
+  content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Looking up genres for each artist...</div>';
+  title.textContent = 'Analyzing...';
+  modal.classList.add('visible');
+
+  let suggestions = {};
+  try {
+    suggestions = await suggestPlaylistsByGenre((done, total) => {
+      content.innerHTML = `<div style="color:#888;text-align:center;padding:30px;">Looking up genres... ${done}/${total} artists</div>`;
+    });
+  } catch (_) {}
+
+  renderSuggestions(suggestions);
+  suggestRunning = false;
+  suggestDone = true;
   btn.textContent = 'Suggest Playlists by Genre';
-  btn.disabled = false;
 });
 
 document.getElementById('suggestModalClose').addEventListener('click', () => {
