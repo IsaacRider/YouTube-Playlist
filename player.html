@@ -83,6 +83,20 @@
   .modal-item .check { color: #1db954; font-size: 16px; min-width: 20px; }
   .modal-close { margin-top: 12px; padding: 10px; border-radius: 8px; border: none; background: #333; color: #eee; font-size: 14px; cursor: pointer; width: 100%; }
 
+  /* Error log */
+  .error-badge { background: #ef4444; color: #fff; font-size: 10px; border-radius: 8px; padding: 1px 5px; margin-left: 6px; font-weight: 700; }
+  .error-log-list { overflow-y: auto; flex: 1; font-size: 12px; }
+  .error-log-entry { padding: 10px; border-bottom: 1px solid #333; }
+  .error-log-entry:last-child { border-bottom: none; }
+  .error-log-time { color: #888; font-size: 11px; margin-bottom: 4px; }
+  .error-log-ctx { color: #f59e0b; margin-bottom: 2px; }
+  .error-log-msg { color: #ef4444; word-break: break-word; }
+  .error-log-detail { color: #999; font-size: 11px; margin-top: 4px; word-break: break-word; white-space: pre-wrap; }
+  .error-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .error-log-header h3 { margin: 0; }
+  .error-log-clear { background: none; border: 1px solid #555; color: #aaa; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+  .error-log-clear:hover { border-color: #ef4444; color: #ef4444; }
+
   /* Playlist view (when viewing a specific playlist's tracks) */
   .pl-view-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .pl-view-header button { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; }
@@ -234,6 +248,8 @@
         <hr>
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
+        <button id="menuErrorLog">Error Log<span class="error-badge" id="errorBadge" style="display:none">0</span></button>
+        <hr>
         <button id="menuDeleteAll" style="color:#ef4444;">Delete All Tracks</button>
       </div>
     </div>
@@ -339,6 +355,20 @@
   </div>
 </div>
 
+<!-- Error log modal -->
+<div class="modal-overlay" id="errorLogModal">
+  <div class="modal" style="max-width:500px;">
+    <div class="error-log-header">
+      <h3>Error Log</h3>
+      <button class="error-log-clear" id="errorLogClear">Clear All</button>
+    </div>
+    <div class="error-log-list" id="errorLogList">
+      <div style="color:#888;padding:20px;text-align:center;">No errors yet</div>
+    </div>
+    <button class="modal-close" id="errorLogClose">Close</button>
+  </div>
+</div>
+
 <!-- Suggest playlists modal -->
 <div class="suggest-modal-overlay" id="suggestModal">
   <div class="suggest-modal">
@@ -377,6 +407,46 @@
 const APP_VERSION = 3;
 const IS_NATIVE = typeof window.Capacitor !== 'undefined';
 const MUSIC_DIR = 'mse_music';
+window.addEventListener('unhandledrejection', e => {
+  if (typeof logError === 'function') logError('Unhandled', e.reason);
+});
+window.addEventListener('error', e => {
+  if (typeof logError === 'function') logError('Uncaught', e.error || e.message);
+});
+
+const errorLog = [];
+function logError(context, error, detail) {
+  const entry = {
+    time: new Date(),
+    context: context || 'Unknown',
+    message: error instanceof Error ? error.message : String(error),
+    detail: detail || (error instanceof Error ? error.stack : null)
+  };
+  errorLog.unshift(entry);
+  if (errorLog.length > 100) errorLog.pop();
+  const badge = document.getElementById('errorBadge');
+  if (badge) { badge.textContent = errorLog.length; badge.style.display = ''; }
+  renderErrorLog();
+}
+function renderErrorLog() {
+  const list = document.getElementById('errorLogList');
+  if (!list) return;
+  if (!errorLog.length) {
+    list.innerHTML = '<div style="color:#888;padding:20px;text-align:center;">No errors yet</div>';
+    return;
+  }
+  list.innerHTML = errorLog.map(e => {
+    const t = e.time.toLocaleTimeString();
+    const d = e.time.toLocaleDateString();
+    return '<div class="error-log-entry">'
+      + '<div class="error-log-time">' + esc(d + ' ' + t) + '</div>'
+      + '<div class="error-log-ctx">' + esc(e.context) + '</div>'
+      + '<div class="error-log-msg">' + esc(e.message) + '</div>'
+      + (e.detail ? '<div class="error-log-detail">' + esc(e.detail) + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+
 const audio = new Audio();
 audio.volume = 1.0;
 
@@ -2070,6 +2140,7 @@ async function downloadYT() {
         if (viewingPlaylist) renderPlaylistDetail();
       }
     } catch (e) {
+      logError('YouTube Download', e, 'URL: ' + url);
       status.className = 'dl-status error';
       status.textContent = e.message || 'Download failed';
     }
@@ -2104,7 +2175,7 @@ async function downloadYTPlaylistStandalone(url, status) {
         }
         const result = await ClientYT.download(v.id, v.title);
         downloadedFiles.push(result.filename);
-      } catch (e) { failed++; }
+      } catch (e) { logError('YT Playlist Track', e, 'Video: ' + v.id + ' — ' + v.title); failed++; }
     }
 
     if (downloadedFiles.length) {
@@ -2122,6 +2193,7 @@ async function downloadYTPlaylistStandalone(url, status) {
     await updateCachedStatus();
     renderPlaylist();
   } catch (e) {
+    logError('YT Playlist', e, 'URL: ' + url);
     status.className = 'dl-status error';
     status.textContent = e.message || 'Playlist download failed';
   }
@@ -2290,7 +2362,8 @@ async function processSpotifyQueue() {
           }
         }
       } catch (e) {
-        entry.text = 'Error';
+        logError('Spotify Track Download', e, 'Track: ' + track.query);
+        entry.text = e.message || 'Error';
         entry.cls = 'log-fail';
         job.failed++;
       }
@@ -2382,6 +2455,7 @@ async function importSpotifyPlaylist(url) {
     processSpotifyQueue();
 
   } catch (e) {
+    logError('Spotify Import', e);
     status.className = 'dl-status error';
     status.textContent = e.message || 'Failed to read Spotify playlist';
     btn.disabled = false;
@@ -2409,6 +2483,26 @@ document.addEventListener('click', () => {
 });
 document.getElementById('hamburgerMenu').addEventListener('click', (e) => {
   e.stopPropagation();
+});
+
+// --- Error Log ---
+document.getElementById('menuErrorLog').addEventListener('click', () => {
+  document.getElementById('hamburgerMenu').classList.remove('visible');
+  renderErrorLog();
+  document.getElementById('errorLogModal').classList.add('visible');
+});
+document.getElementById('errorLogClose').addEventListener('click', () => {
+  document.getElementById('errorLogModal').classList.remove('visible');
+});
+document.getElementById('errorLogModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('errorLogModal'))
+    document.getElementById('errorLogModal').classList.remove('visible');
+});
+document.getElementById('errorLogClear').addEventListener('click', () => {
+  errorLog.length = 0;
+  const badge = document.getElementById('errorBadge');
+  badge.style.display = 'none'; badge.textContent = '0';
+  renderErrorLog();
 });
 
 // --- Upload MP3s ---
@@ -2773,7 +2867,8 @@ function addToDownloadQueue(title, url, videoId) {
         if (viewingPlaylist) renderPlaylistDetail();
       }
     } catch (e) {
-      statusEl.textContent = 'Error';
+      logError('Queue Download', e, 'Title: ' + (title || videoId || url));
+      statusEl.textContent = e.message || 'Error';
       statusEl.className = 'dl-queue-status error';
     }
     setTimeout(() => item.remove(), 8000);
