@@ -3033,9 +3033,13 @@ async function checkForAppUpdate() {
 async function ensureStoragePermission() {
   if (!NativeYT) return;
   try {
-    const { granted } = await NativeYT.checkStoragePermission();
-    if (!granted) {
-      await NativeYT.requestStoragePermission();
+    let { granted } = await NativeYT.checkStoragePermission();
+    if (granted) return;
+    await NativeYT.requestStoragePermission();
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const check = await NativeYT.checkStoragePermission();
+      if (check.granted) return;
     }
   } catch (_) {}
 }

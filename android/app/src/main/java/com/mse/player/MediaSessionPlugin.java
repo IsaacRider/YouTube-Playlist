@@ -136,7 +136,9 @@ public class MediaSessionPlugin extends Plugin {
         if (instance != null) {
             JSObject data = new JSObject();
             data.put("action", action);
-            instance.notifyListeners("mediaAction", data);
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (instance != null) instance.notifyListeners("mediaAction", data);
+            });
         }
     }
 
@@ -145,7 +147,9 @@ public class MediaSessionPlugin extends Plugin {
             JSObject data = new JSObject();
             data.put("action", "seekto");
             data.put("seekTime", seconds);
-            instance.notifyListeners("mediaAction", data);
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (instance != null) instance.notifyListeners("mediaAction", data);
+            });
         }
     }
 
@@ -155,7 +159,9 @@ public class MediaSessionPlugin extends Plugin {
             data.put("action", "playTrack");
             data.put("filename", filename);
             if (playlist != null) data.put("playlist", playlist);
-            instance.notifyListeners("mediaAction", data);
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (instance != null) instance.notifyListeners("mediaAction", data);
+            });
         }
     }
 }
