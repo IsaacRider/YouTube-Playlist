@@ -559,8 +559,16 @@ const ClientYT = {
     client: { clientName: 'WEB', clientVersion: '2.20250601.00.00', hl: 'en', gl: 'US' }
   },
 
-  _androidContext: {
-    client: { clientName: 'ANDROID', clientVersion: '19.09.37', androidSdkVersion: 30, hl: 'en', gl: 'US' }
+  _playerContext: {
+    client: {
+      clientName: 'ANDROID_VR',
+      clientVersion: '1.61.48',
+      androidSdkVersion: 32,
+      deviceMake: 'Oculus',
+      deviceModel: 'Quest 3',
+      hl: 'en',
+      gl: 'US'
+    }
   },
 
   async search(query) {
@@ -589,8 +597,11 @@ const ClientYT = {
   async getAudioUrl(videoId) {
     const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ context: this._androidContext, videoId })
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; eureka-user Build/SQ3A.220605.009.A1) gzip'
+      },
+      body: JSON.stringify({ context: this._playerContext, videoId })
     });
     if (!r.ok) throw new Error('Failed to get video info');
     const data = await r.json();
