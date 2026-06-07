@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.1</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.2</div>
         <div class="library-stats" id="libraryStats"></div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
@@ -459,20 +459,19 @@ const NativeMediaSession = (() => {
   if (!plugin) return null;
 
   window.addEventListener('mediaAction', (event) => {
-    let data;
-    try { data = typeof event === 'string' ? JSON.parse(event) : JSON.parse(event.detail || event.data || '{}'); } catch (_) { data = {}; }
-    switch (data.action) {
+    const action = event.action;
+    switch (action) {
       case 'play': audio.play().catch(() => {}); break;
       case 'pause': audio.pause(); break;
       case 'nexttrack': nextTrack(); break;
       case 'previoustrack': prevTrack(); break;
       case 'seekto':
-        if (data.seekTime != null && audio.duration) {
-          audio.currentTime = data.seekTime;
+        if (event.seekTime != null && audio.duration) {
+          audio.currentTime = event.seekTime;
         }
         break;
       case 'playTrack':
-        if (data.filename) playSpecificTrack(data.filename, data.playlist || null);
+        if (event.filename) playSpecificTrack(event.filename, event.playlist || null);
         break;
     }
   });
@@ -1933,15 +1932,51 @@ document.getElementById('plRenameBtn').addEventListener('click', () => {
 });
 
 // --- Suggest Playlists ---
+function suggestPlaylistsLocal() {
+  const genreKeywords = {
+    'Hip Hop': ['rap', 'hip hop', 'hiphop', 'trap', 'drill', 'eminem', 'drake', 'kanye', 'kendrick', 'j cole', 'nas', 'jay-z', 'lil ', 'youngboy', 'future', 'travis scott', 'migos', '21 savage', 'metro boomin', 'playboi carti'],
+    'R&B': ['r&b', 'rnb', 'soul', 'the weeknd', 'sza', 'frank ocean', 'usher', 'bryson tiller', 'khalid', 'daniel caesar', 'summer walker', 'jhene aiko', 'chris brown'],
+    'Pop': ['pop', 'taylor swift', 'ariana grande', 'dua lipa', 'billie eilish', 'harry styles', 'olivia rodrigo', 'ed sheeran', 'justin bieber', 'selena gomez', 'doja cat', 'post malone', 'the chainsmokers'],
+    'Rock': ['rock', 'metal', 'punk', 'grunge', 'nirvana', 'foo fighters', 'green day', 'linkin park', 'acdc', 'ac/dc', 'metallica', 'red hot chili', 'arctic monkeys', 'imagine dragons', 'twenty one pilots'],
+    'Country': ['country', 'nashville', 'morgan wallen', 'luke combs', 'zach bryan', 'luke bryan', 'jason aldean', 'carrie underwood', 'dolly parton', 'johnny cash'],
+    'Electronic': ['edm', 'electronic', 'house', 'techno', 'dubstep', 'trance', 'dj ', 'marshmello', 'skrillex', 'deadmau5', 'avicii', 'calvin harris', 'tiesto', 'martin garrix', 'kygo'],
+    'Latin': ['latin', 'reggaeton', 'bachata', 'salsa', 'bad bunny', 'j balvin', 'ozuna', 'daddy yankee', 'shakira', 'maluma', 'rauw alejandro', 'karol g'],
+    'Jazz': ['jazz', 'miles davis', 'john coltrane', 'thelonious monk', 'duke ellington', 'louis armstrong', 'ella fitzgerald', 'billie holiday'],
+    'Classical': ['classical', 'symphony', 'concerto', 'beethoven', 'mozart', 'bach', 'chopin', 'vivaldi', 'orchestra', 'sonata', 'opus'],
+    'Indie': ['indie', 'alternative', 'tame impala', 'mac demarco', 'bon iver', 'phoebe bridgers', 'clairo', 'beach house', 'the 1975', 'radiohead'],
+    'K-Pop': ['k-pop', 'kpop', 'bts', 'blackpink', 'stray kids', 'twice', 'aespa', 'nct', 'seventeen', 'ateez', 'enhypen']
+  };
+
+  const suggestions = {};
+  for (const t of tracks) {
+    const lower = t.toLowerCase();
+    for (const [genre, keywords] of Object.entries(genreKeywords)) {
+      if (keywords.some(kw => lower.includes(kw))) {
+        if (!suggestions[genre]) suggestions[genre] = [];
+        if (!suggestions[genre].includes(t)) suggestions[genre].push(t);
+        break;
+      }
+    }
+  }
+  // Group by artist (tracks with " - " pattern)
+  const artistCounts = {};
+  for (const t of tracks) {
+    const p = parseTrack(t);
+    if (p.artist) {
+      if (!artistCounts[p.artist]) artistCounts[p.artist] = [];
+      artistCounts[p.artist].push(t);
+    }
+  }
+  for (const [artist, artistTracks] of Object.entries(artistCounts)) {
+    if (artistTracks.length >= 3) {
+      suggestions[artist] = artistTracks;
+    }
+  }
+  return suggestions;
+}
+
 document.getElementById('suggestBtn').addEventListener('click', async () => {
   if (!tracks.length) return;
-  if (!isOnline) {
-    const status = document.getElementById('dlStatus');
-    status.className = 'dl-status error';
-    status.textContent = 'Genre analysis requires the Mac server';
-    setTimeout(() => { status.textContent = ''; }, 4000);
-    return;
-  }
   const btn = document.getElementById('suggestBtn');
   const modal = document.getElementById('suggestModal');
   const content = document.getElementById('suggestContent');
@@ -1949,54 +1984,58 @@ document.getElementById('suggestBtn').addEventListener('click', async () => {
 
   btn.textContent = 'Analyzing tracks...';
   btn.disabled = true;
-  content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Researching genres via YouTube... This may take a few minutes for large libraries.</div>';
-  title.textContent = 'Analyzing...';
   modal.classList.add('visible');
 
-  try {
-    const r = await fetch(serverUrl + '/api/suggest-playlists', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tracks })
-    });
-    const data = await r.json();
-    const suggestions = data.suggestions || {};
-    const genres = Object.keys(suggestions);
+  let suggestions = {};
 
-    if (!genres.length) {
-      content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Could not determine genres. Try downloading more tracks with YouTube URLs.</div>';
-      title.textContent = 'No Suggestions';
-    } else {
-      title.textContent = `${genres.length} Genre${genres.length > 1 ? 's' : ''} Found`;
-      content.innerHTML = genres.map(genre => {
-        const trackList = suggestions[genre];
-        const exists = genre in playlists;
-        return `<div class="suggest-genre">
-          <div class="suggest-genre-header">
-            <div>
-              <div class="suggest-genre-name">${esc(genre)}</div>
-              <div class="suggest-genre-count">${trackList.length} track${trackList.length > 1 ? 's' : ''}</div>
-            </div>
-            <div class="suggest-genre-actions">
-              <button class="suggest-create-btn" data-genre="${esc(genre)}" ${exists ? 'disabled title="Already exists"' : ''}>${exists ? 'Exists' : 'Create Playlist'}</button>
-            </div>
-          </div>
-          <div class="suggest-tracks">${trackList.map(t => `<div>${esc(t.replace('.mp3', ''))}</div>`).join('')}</div>
-        </div>`;
-      }).join('');
-
-      content.querySelectorAll('.suggest-create-btn:not(:disabled)').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const genre = btn.dataset.genre;
-          await savePlaylist(genre, suggestions[genre]);
-          btn.disabled = true;
-          btn.textContent = 'Created ✓';
-        });
+  if (isOnline) {
+    try {
+      const r = await fetch(serverUrl + '/api/suggest-playlists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks })
       });
-    }
-  } catch (e) {
-    content.innerHTML = '<div style="color:#ef4444;text-align:center;padding:30px;">Failed to analyze tracks. Is the server running?</div>';
-    title.textContent = 'Error';
+      const data = await r.json();
+      suggestions = data.suggestions || {};
+    } catch (_) {}
+  }
+
+  if (!Object.keys(suggestions).length) {
+    suggestions = suggestPlaylistsLocal();
+  }
+
+  const genres = Object.keys(suggestions);
+
+  if (!genres.length) {
+    content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Could not determine genres. Try downloading more tracks.</div>';
+    title.textContent = 'No Suggestions';
+  } else {
+    title.textContent = `${genres.length} Playlist${genres.length > 1 ? 's' : ''} Suggested`;
+    content.innerHTML = genres.map(genre => {
+      const trackList = suggestions[genre];
+      const exists = genre in playlists;
+      return `<div class="suggest-genre">
+        <div class="suggest-genre-header">
+          <div>
+            <div class="suggest-genre-name">${esc(genre)}</div>
+            <div class="suggest-genre-count">${trackList.length} track${trackList.length > 1 ? 's' : ''}</div>
+          </div>
+          <div class="suggest-genre-actions">
+            <button class="suggest-create-btn" data-genre="${esc(genre)}" ${exists ? 'disabled title="Already exists"' : ''}>${exists ? 'Exists' : 'Create Playlist'}</button>
+          </div>
+        </div>
+        <div class="suggest-tracks">${trackList.map(t => `<div>${esc(t.replace('.mp3', ''))}</div>`).join('')}</div>
+      </div>`;
+    }).join('');
+
+    content.querySelectorAll('.suggest-create-btn:not(:disabled)').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const genre = btn.dataset.genre;
+        await savePlaylist(genre, suggestions[genre]);
+        btn.disabled = true;
+        btn.textContent = 'Created';
+      });
+    });
   }
 
   btn.textContent = 'Suggest Playlists by Genre';
