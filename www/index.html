@@ -526,10 +526,13 @@ function getHttp() { return window.Capacitor.Plugins.CapacitorHttp; }
 async function nativePost(url, headers, body) {
   if (!IS_NATIVE) {
     const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-    return { status: r.status, data: r.ok ? await r.json() : null };
+    const data = await r.json().catch(() => null);
+    return { status: r.status, data };
   }
   const r = await getHttp().post({ url, headers, data: body });
-  return { status: r.status, data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data };
+  let data = r.data;
+  if (typeof data === 'string') try { data = JSON.parse(data); } catch (_) {}
+  return { status: r.status, data };
 }
 
 async function nativeDownloadToFile(url, filename, headers) {
@@ -669,7 +672,20 @@ const ClientYT = {
           hl: 'en', gl: 'US'
         }
       },
-      ua: 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)'
+      ua: 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+      origin: 'https://www.youtube.com'
+    },
+    {
+      context: {
+        client: {
+          clientName: 'ANDROID_MUSIC',
+          clientVersion: '7.27.52',
+          androidSdkVersion: 30,
+          hl: 'en', gl: 'US'
+        }
+      },
+      ua: 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip',
+      origin: 'https://music.youtube.com'
     },
     {
       context: {
@@ -682,7 +698,8 @@ const ClientYT = {
           hl: 'en', gl: 'US'
         }
       },
-      ua: 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; eureka-user Build/SQ3A.220605.009.A1) gzip'
+      ua: 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; eureka-user Build/SQ3A.220605.009.A1) gzip',
+      origin: 'https://www.youtube.com'
     }
   ],
 
@@ -716,12 +733,21 @@ const ClientYT = {
         const name = pc.context.client.clientName;
         const headers = { 'Content-Type': 'application/json' };
         if (pc.ua) headers['User-Agent'] = pc.ua;
+        if (pc.origin) {
+          headers['Origin'] = pc.origin;
+          headers['Referer'] = pc.origin + '/';
+          headers['X-Goog-Api-Key'] = this.INNERTUBE_KEY;
+        }
         const r = await nativePost(
           this.API_BASE + '/player?key=' + this.INNERTUBE_KEY,
           headers,
           { context: pc.context, videoId }
         );
-        if (r.status < 200 || r.status >= 300) { lastError = name + ': HTTP ' + r.status; continue; }
+        if (r.status < 200 || r.status >= 300) {
+          const errBody = typeof r.data === 'object' ? JSON.stringify(r.data).substring(0, 200) : String(r.data || '').substring(0, 200);
+          lastError = name + ': HTTP ' + r.status + ' — ' + errBody;
+          continue;
+        }
         const data = r.data;
         if (data.playabilityStatus?.status !== 'OK') {
           lastError = name + ': ' + (data.playabilityStatus?.reason || 'not playable');
@@ -736,7 +762,7 @@ const ClientYT = {
         if (!preferred) { lastError = name + ': no audio stream with direct URL'; continue; }
         const title = data?.videoDetails?.title || videoId;
         const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
-        return { url: preferred.url, title, duration, mimeType: preferred.mimeType, ua: pc.ua };
+        return { url: preferred.url, title, duration, mimeType: preferred.mimeType, ua: pc.ua, origin: pc.origin };
       } catch (e) {
         lastError = pc.context.client.clientName + ': ' + e.message;
       }
@@ -786,6 +812,7 @@ const ClientYT = {
 
     const dlHeaders = {};
     if (info.ua) dlHeaders['User-Agent'] = info.ua;
+    if (info.origin) { dlHeaders['Origin'] = info.origin; dlHeaders['Referer'] = info.origin + '/'; }
     const buffer = await nativeDownloadToFile(info.url, filename, dlHeaders);
 
     if (IS_NATIVE) {
