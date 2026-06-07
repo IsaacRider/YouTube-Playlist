@@ -243,11 +243,12 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.3</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.4</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
         <button id="menuExport">Export All</button>
+        <button id="menuFetchArt">Fetch Album Art</button>
         <hr>
         <label style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:13px;cursor:pointer;"><input type="checkbox" id="dlNotifToggle" checked> Download Notification</label>
         <hr>
@@ -3105,6 +3106,90 @@ document.getElementById('menuExport').addEventListener('click', () => {
     status.textContent = 'Export download started!';
     setTimeout(() => { status.textContent = ''; }, 5000);
   }, 2000);
+});
+
+document.getElementById('menuFetchArt').addEventListener('click', async () => {
+  document.getElementById('hamburgerMenu').classList.remove('visible');
+  const status = document.getElementById('dlStatus');
+
+  const tracksWithYT = tracks.filter(t => {
+    const m = metadata[t];
+    if (!m) return false;
+    let vid = m.videoId;
+    if (!vid && m.youtube_url) {
+      const match = m.youtube_url.match(/[?&]v=([^&]+)/);
+      if (match) vid = match[1];
+    }
+    return !!vid;
+  });
+
+  if (!tracksWithYT.length) {
+    status.className = 'dl-status error';
+    status.textContent = 'No tracks with YouTube links found';
+    setTimeout(() => { status.textContent = ''; }, 4000);
+    return;
+  }
+
+  status.className = 'dl-status';
+  status.textContent = `Fetching album art: 0/${tracksWithYT.length}...`;
+  let fetched = 0;
+  let skipped = 0;
+
+  for (const t of tracksWithYT) {
+    const artFilename = t.replace(/\.mp3$/i, '.jpg');
+    const m = metadata[t];
+    let vid = m.videoId;
+    if (!vid && m.youtube_url) {
+      const match = m.youtube_url.match(/[?&]v=([^&]+)/);
+      if (match) vid = match[1];
+    }
+    if (!vid) continue;
+
+    // Check if art already exists
+    if (IS_NATIVE) {
+      try {
+        await getFS().stat({ path: MUSIC_DIR + '/.thumbs/' + artFilename, directory: DIR_DATA });
+        skipped++;
+        fetched++;
+        status.textContent = `Fetching album art: ${fetched}/${tracksWithYT.length}...`;
+        continue;
+      } catch (_) {}
+    }
+
+    // Download thumbnail
+    const thumbUrl = 'https://img.youtube.com/vi/' + vid + '/mqdefault.jpg';
+    try {
+      if (IS_NATIVE) {
+        await ensureMusicDir();
+        try {
+          await getFS().mkdir({ path: MUSIC_DIR + '/.thumbs', directory: DIR_DATA, recursive: true });
+        } catch (_) {}
+        const resp = await fetch(thumbUrl);
+        if (resp.ok) {
+          const buf = await resp.arrayBuffer();
+          const base64 = arrayBufferToBase64(buf);
+          await getFS().writeFile({ path: MUSIC_DIR + '/.thumbs/' + artFilename, directory: DIR_DATA, data: base64 });
+        }
+      } else {
+        // Web: just verify the URL works (art loads on demand from YouTube)
+        await fetch(thumbUrl, { mode: 'no-cors' });
+      }
+
+      if (!m.videoId) {
+        m.videoId = vid;
+        localStorage.setItem('metadata', JSON.stringify(metadata));
+      }
+    } catch (_) {}
+
+    fetched++;
+    status.textContent = `Fetching album art: ${fetched}/${tracksWithYT.length}...`;
+  }
+
+  await savePlaylistsToFile();
+  status.className = 'dl-status';
+  status.textContent = `Album art done! ${fetched - skipped} new, ${skipped} already had art.`;
+  if (currentFilename) updatePlaybarArt(currentFilename);
+  setTimeout(() => { status.textContent = ''; }, 5000);
 });
 
 // (Sync/devices UI removed - app runs standalone)
