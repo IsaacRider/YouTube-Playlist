@@ -90,10 +90,10 @@ public class MediaSessionPlugin extends Plugin {
 
     @PluginMethod
     public void nativePlay(PluginCall call) {
-        String filePath = call.getString("filePath", "");
+        String filename = call.getString("filename", "");
         ensureService();
-        if (MediaPlaybackService.instance != null && !filePath.isEmpty()) {
-            MediaPlaybackService.instance.nativePlayFile(filePath);
+        if (MediaPlaybackService.instance != null && !filename.isEmpty()) {
+            MediaPlaybackService.instance.nativePlayFile(filename);
         }
         call.resolve();
     }

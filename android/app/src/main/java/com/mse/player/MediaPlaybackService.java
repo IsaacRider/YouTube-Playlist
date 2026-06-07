@@ -12,7 +12,6 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -183,18 +182,18 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     // --- Native MediaPlayer controls ---
 
-    void nativePlayFile(String filePath) {
+    void nativePlayFile(String filename) {
         try {
             mediaPlayer.reset();
-            File file = new File(filePath);
+            File mseDir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_MUSIC), "MSE");
+            File file = new File(mseDir, filename);
             if (!file.exists()) {
-                File mseDir = new File(Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_MUSIC), "MSE");
-                file = new File(mseDir, filePath);
+                file = new File(filename);
             }
             mediaPlayer.setDataSource(file.getAbsolutePath());
             mediaPlayer.prepareAsync();
-        } catch (IOException e) {
+        } catch (Exception e) {
             MediaSessionPlugin.sendNativeEvent("error", 0);
         }
     }

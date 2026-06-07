@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.9</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.0</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -531,8 +531,8 @@ const NativeMediaSession = (() => {
     updatePlayback(playing, position, duration) {
       // no-op: native player manages its own state now
     },
-    nativePlay(filePath) {
-      plugin.nativePlay({ filePath });
+    nativePlay(filename) {
+      plugin.nativePlay({ filename });
     },
     nativeSetVolume(vol) {
       plugin.nativeSetVolume({ volume: vol });
@@ -1348,9 +1348,7 @@ async function loadAndPlay(specificFile) {
 
   // Load and play audio
   if (IS_NATIVE && NativeMediaSession) {
-    const result = await getFS().getUri({ path: MUSIC_DIR + '/' + filename, directory: DIR_DATA });
-    const filePath = result.uri.replace('file://', '');
-    NativeMediaSession.nativePlay(filePath);
+    NativeMediaSession.nativePlay(filename);
   } else {
     let src;
     try {
