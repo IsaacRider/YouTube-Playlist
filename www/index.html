@@ -131,8 +131,11 @@
 
   /* Fixed bottom player */
   .bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: #181818; border-top: 1px solid #282828; padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom)); z-index: 10; }
-  .bp-title { font-size: 13px; font-weight: 600; text-align: center; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bp-playlist { font-size: 10px; color: #1db954; text-align: center; margin-bottom: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .bp-art { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+  .bp-top-text { flex: 1; overflow: hidden; min-width: 0; }
+  .bp-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-playlist { font-size: 10px; color: #1db954; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
   .bp-playlist:hover { text-decoration: underline; }
   .bp-progress { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 10px; color: #888; }
   .bp-progress input[type=range] { flex: 1; accent-color: #1db954; height: 4px; }
@@ -240,7 +243,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.2</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.3</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -402,8 +405,13 @@
 </div>
 
 <div class="bottom-player">
-  <div class="bp-title" id="nowPlaying">Tap a track to play</div>
-  <div class="bp-playlist" id="nowPlaylist" style="display:none;">All Tracks</div>
+  <div class="bp-top">
+    <img id="albumArt" class="bp-art" style="display:none;" alt="" onerror="this.style.display='none'">
+    <div class="bp-top-text">
+      <div class="bp-title" id="nowPlaying">Tap a track to play</div>
+      <div class="bp-playlist" id="nowPlaylist" style="display:none;">All Tracks</div>
+    </div>
+  </div>
   <div class="bp-progress">
     <span id="curTime">0:00</span>
     <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
@@ -545,8 +553,8 @@ const NativeMediaSession = (() => {
   };
 
   return {
-    updateMetadata(title, artist, album) {
-      plugin.updateMetadata({ title, artist, album });
+    updateMetadata(title, artist, album, artFilename) {
+      plugin.updateMetadata({ title, artist, album, artFilename: artFilename || '' });
     },
     updatePlayback(playing, position, duration) {
       // no-op: native player manages its own state now
@@ -939,7 +947,7 @@ const ClientYT = {
         localStorage.setItem('tracks', JSON.stringify(tracks));
       }
       const meta = JSON.parse(localStorage.getItem('metadata') || '{}');
-      meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId };
+      meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId, videoId };
       localStorage.setItem('metadata', JSON.stringify(meta));
       metadata = meta;
       return { filename, title: r.title };
@@ -962,7 +970,7 @@ const ClientYT = {
       localStorage.setItem('tracks', JSON.stringify(tracks));
     }
     const meta = JSON.parse(localStorage.getItem('metadata') || '{}');
-    meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId };
+    meta[filename] = { youtube_url: 'https://www.youtube.com/watch?v=' + videoId, videoId };
     localStorage.setItem('metadata', JSON.stringify(meta));
     metadata = meta;
 
@@ -1337,6 +1345,46 @@ function currentSource() {
   return activePlaylist ? getPlaylistTracks(activePlaylist) : tracks;
 }
 
+function getArtFilename(filename) {
+  return filename ? filename.replace(/\.mp3$/i, '.jpg') : '';
+}
+
+function getTrackArtUrl(filename) {
+  if (!filename) return '';
+  const m = metadata[filename];
+  if (m && m.videoId) {
+    return 'https://img.youtube.com/vi/' + m.videoId + '/mqdefault.jpg';
+  }
+  if (m && m.youtube_url) {
+    const match = m.youtube_url.match(/[?&]v=([^&]+)/);
+    if (match) return 'https://img.youtube.com/vi/' + match[1] + '/mqdefault.jpg';
+  }
+  return '';
+}
+
+function updatePlaybarArt(filename) {
+  const el = document.getElementById('albumArt');
+  if (!filename) { el.style.display = 'none'; return; }
+  if (IS_NATIVE) {
+    // Try local .thumbs file first via Capacitor
+    getFS().getUri({ path: MUSIC_DIR + '/.thumbs/' + getArtFilename(filename), directory: DIR_DATA })
+      .then(r => {
+        const src = window.Capacitor.convertFileSrc(r.uri);
+        el.src = src;
+        el.style.display = 'block';
+      })
+      .catch(() => {
+        const url = getTrackArtUrl(filename);
+        if (url) { el.src = url; el.style.display = 'block'; }
+        else { el.style.display = 'none'; }
+      });
+  } else {
+    const url = getTrackArtUrl(filename);
+    if (url) { el.src = url; el.style.display = 'block'; }
+    else { el.style.display = 'none'; }
+  }
+}
+
 function updatePlaybarPlaylist() {
   const el = document.getElementById('nowPlaylist');
   if (!loaded) { el.style.display = 'none'; return; }
@@ -1375,6 +1423,7 @@ async function loadAndPlay(specificFile) {
   updateMediaSession(filename);
   updateActiveHighlight();
   updatePlaybarPlaylist();
+  updatePlaybarArt(filename);
 
   // Load and play audio
   if (IS_NATIVE && NativeMediaSession) {
@@ -1430,7 +1479,8 @@ function updateMediaSession(filename) {
   }
 
   if (NativeMediaSession) {
-    NativeMediaSession.updateMetadata(title, artist, album);
+    const artFile = getArtFilename(filename);
+    NativeMediaSession.updateMetadata(title, artist, album, artFile);
   }
 }
 
@@ -1643,6 +1693,7 @@ function restoreState() {
         document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
         updateMediaSession(state.track);
         updatePlaybarPlaylist();
+        updatePlaybarArt(state.track);
         renderPlaylist();
 
         // Load audio and seek to saved position but don't play

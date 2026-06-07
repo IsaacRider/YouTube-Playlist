@@ -63,10 +63,11 @@ public class MediaSessionPlugin extends Plugin {
         String title = call.getString("title", "");
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
+        String artFilename = call.getString("artFilename", "");
 
         ensureService();
         if (MediaPlaybackService.instance != null) {
-            MediaPlaybackService.instance.updateMetadata(title, artist, album);
+            MediaPlaybackService.instance.updateMetadata(title, artist, album, artFilename);
         }
         call.resolve();
     }

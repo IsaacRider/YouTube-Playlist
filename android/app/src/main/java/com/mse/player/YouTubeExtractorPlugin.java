@@ -298,10 +298,34 @@ public class YouTubeExtractorPlugin extends Plugin {
                     }
                 }
 
+                // Download thumbnail
+                String thumbPath = "";
+                try {
+                    File thumbDir = new File(musicDir, ".thumbs");
+                    if (!thumbDir.exists()) thumbDir.mkdirs();
+                    File thumbFile = new File(thumbDir, filename.replaceAll("\\.mp3$", ".jpg"));
+                    String thumbUrl = "https://img.youtube.com/vi/" + videoId + "/mqdefault.jpg";
+                    Request thumbReq = new Request.Builder().url(thumbUrl).build();
+                    Response thumbResp = client.newCall(thumbReq).execute();
+                    if (thumbResp.isSuccessful() && thumbResp.body() != null) {
+                        try (InputStream tin = thumbResp.body().byteStream();
+                             FileOutputStream tout = new FileOutputStream(thumbFile)) {
+                            byte[] tbuf = new byte[8192];
+                            int tread;
+                            while ((tread = tin.read(tbuf)) != -1) {
+                                tout.write(tbuf, 0, tread);
+                            }
+                        }
+                        thumbPath = thumbFile.getAbsolutePath();
+                    }
+                    thumbResp.close();
+                } catch (Exception ignored) {}
+
                 JSObject ret = new JSObject();
                 ret.put("filename", filename);
                 ret.put("title", title);
                 ret.put("path", outFile.getAbsolutePath());
+                ret.put("thumbnailPath", thumbPath);
                 call.resolve(ret);
             } catch (Exception e) {
                 call.reject("Download failed: " + e.getMessage(), e);

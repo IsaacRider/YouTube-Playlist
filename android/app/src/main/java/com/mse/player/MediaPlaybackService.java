@@ -4,6 +4,8 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioAttributes;
@@ -61,6 +63,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
     private Handler positionHandler = new Handler(Looper.getMainLooper());
     private Runnable positionUpdater;
     private float currentVolume = 1.0f;
+    private Bitmap albumArt = null;
 
     @Override
     public void onCreate() {
@@ -452,10 +455,30 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
         super.onDestroy();
     }
 
-    void updateMetadata(String title, String artist, String album) {
+    void updateMetadata(String title, String artist, String album, String artPath) {
         this.currentTitle = title != null ? title : "";
         this.currentArtist = artist != null ? artist : "";
         this.currentAlbum = album != null ? album : "";
+
+        if (artPath != null && !artPath.isEmpty()) {
+            try {
+                File artFile = new File(artPath);
+                if (!artFile.exists()) {
+                    File thumbDir = new File(Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_MUSIC), "MSE/.thumbs");
+                    artFile = new File(thumbDir, artPath);
+                }
+                if (artFile.exists()) {
+                    albumArt = BitmapFactory.decodeFile(artFile.getAbsolutePath());
+                } else {
+                    albumArt = null;
+                }
+            } catch (Exception e) {
+                albumArt = null;
+            }
+        } else {
+            albumArt = null;
+        }
 
         if (mediaSession != null) {
             MediaMetadataCompat.Builder meta = new MediaMetadataCompat.Builder()
@@ -464,6 +487,9 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                     .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentAlbum);
             if (duration > 0) {
                 meta.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration);
+            }
+            if (albumArt != null) {
+                meta.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, albumArt);
             }
             mediaSession.setMetadata(meta.build());
         }
@@ -530,7 +556,7 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 R.drawable.ic_skip_next, "Next",
                 buildActionIntent("ACTION_NEXT")).build();
 
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle(currentTitle.isEmpty() ? "MSE" : currentTitle)
                 .setContentText(currentArtist)
                 .setSubText(currentAlbum)
@@ -543,8 +569,11 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 .addAction(nextAction)
                 .setStyle(new MediaStyle()
                         .setMediaSession(mediaSession.getSessionToken())
-                        .setShowActionsInCompactView(0, 1, 2))
-                .build();
+                        .setShowActionsInCompactView(0, 1, 2));
+        if (albumArt != null) {
+            builder.setLargeIcon(albumArt);
+        }
+        Notification notification = builder.build();
 
         startForeground(NOTIFICATION_ID, notification);
     }
