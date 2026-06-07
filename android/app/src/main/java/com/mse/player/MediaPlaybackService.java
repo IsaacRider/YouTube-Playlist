@@ -6,8 +6,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -48,6 +50,8 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
     private Map<String, List<String>> playlistsMap = new LinkedHashMap<>();
     private String browsingPlaylist = null;
     private PowerManager.WakeLock wakeLock;
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
 
     @Override
     public void onCreate() {
@@ -98,6 +102,29 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
                 }
             }
         });
+
+        audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        AudioAttributes audioAttrs = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build();
+        audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(audioAttrs)
+                .setWillPauseWhenDucked(false)
+                .setOnAudioFocusChangeListener(focusChange -> {
+                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
+                        updatePlaybackState(false, position, duration);
+                        MediaSessionPlugin.sendAction("pause");
+                    } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                        updatePlaybackState(false, position, duration);
+                        MediaSessionPlugin.sendAction("pause");
+                    } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+                        updatePlaybackState(true, position, duration);
+                        MediaSessionPlugin.sendAction("play");
+                    }
+                })
+                .build();
+        audioManager.requestAudioFocus(audioFocusRequest);
 
         showInitialNotification();
         registerBluetoothAutoResume();
@@ -265,6 +292,9 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     @Override
     public void onDestroy() {
+        if (audioManager != null && audioFocusRequest != null) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        }
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }

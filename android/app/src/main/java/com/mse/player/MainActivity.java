@@ -1,6 +1,7 @@
 package com.mse.player;
 
 import android.os.Bundle;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
 
@@ -10,6 +11,12 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MediaSessionPlugin.class);
         registerPlugin(YouTubeExtractorPlugin.class);
         super.onCreate(savedInstanceState);
+
+        WebView wv = getBridge() != null ? getBridge().getWebView() : null;
+        if (wv != null) {
+            WebSettings settings = wv.getSettings();
+            settings.setMediaPlaybackRequiresUserGesture(false);
+        }
     }
 
     private void keepWebViewAlive() {
