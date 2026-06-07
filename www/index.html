@@ -238,8 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.4</div>
-        <div class="library-stats" id="libraryStats"></div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.5</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -1929,45 +1928,78 @@ document.getElementById('plRenameBtn').addEventListener('click', () => {
 });
 
 // --- Suggest Playlists ---
-function suggestPlaylistsLocal() {
-  const genreKeywords = {
-    'Hip Hop': ['rap', 'hip hop', 'hiphop', 'trap', 'drill', 'eminem', 'drake', 'kanye', 'kendrick', 'j cole', 'nas', 'jay-z', 'lil ', 'youngboy', 'future', 'travis scott', 'migos', '21 savage', 'metro boomin', 'playboi carti'],
-    'R&B': ['r&b', 'rnb', 'soul', 'the weeknd', 'sza', 'frank ocean', 'usher', 'bryson tiller', 'khalid', 'daniel caesar', 'summer walker', 'jhene aiko', 'chris brown'],
-    'Pop': ['pop', 'taylor swift', 'ariana grande', 'dua lipa', 'billie eilish', 'harry styles', 'olivia rodrigo', 'ed sheeran', 'justin bieber', 'selena gomez', 'doja cat', 'post malone', 'the chainsmokers'],
-    'Rock': ['rock', 'metal', 'punk', 'grunge', 'nirvana', 'foo fighters', 'green day', 'linkin park', 'acdc', 'ac/dc', 'metallica', 'red hot chili', 'arctic monkeys', 'imagine dragons', 'twenty one pilots'],
-    'Country': ['country', 'nashville', 'morgan wallen', 'luke combs', 'zach bryan', 'luke bryan', 'jason aldean', 'carrie underwood', 'dolly parton', 'johnny cash'],
-    'Electronic': ['edm', 'electronic', 'house', 'techno', 'dubstep', 'trance', 'dj ', 'marshmello', 'skrillex', 'deadmau5', 'avicii', 'calvin harris', 'tiesto', 'martin garrix', 'kygo'],
-    'Latin': ['latin', 'reggaeton', 'bachata', 'salsa', 'bad bunny', 'j balvin', 'ozuna', 'daddy yankee', 'shakira', 'maluma', 'rauw alejandro', 'karol g'],
-    'Jazz': ['jazz', 'miles davis', 'john coltrane', 'thelonious monk', 'duke ellington', 'louis armstrong', 'ella fitzgerald', 'billie holiday'],
-    'Classical': ['classical', 'symphony', 'concerto', 'beethoven', 'mozart', 'bach', 'chopin', 'vivaldi', 'orchestra', 'sonata', 'opus'],
-    'Indie': ['indie', 'alternative', 'tame impala', 'mac demarco', 'bon iver', 'phoebe bridgers', 'clairo', 'beach house', 'the 1975', 'radiohead'],
-    'K-Pop': ['k-pop', 'kpop', 'bts', 'blackpink', 'stray kids', 'twice', 'aespa', 'nct', 'seventeen', 'ateez', 'enhypen']
-  };
+const GENRE_KEYWORDS = {
+  'Hip Hop': ['rap', 'hip hop', 'hiphop', 'trap', 'drill', 'rapper', 'rapping'],
+  'R&B': ['r&b', 'rnb', 'rhythm and blues', 'neo-soul', 'neo soul'],
+  'Pop': ['pop', 'synth-pop', 'synthpop', 'dance-pop', 'electropop'],
+  'Rock': ['rock', 'metal', 'punk', 'grunge', 'hard rock', 'alt-rock', 'alternative rock', 'classic rock', 'prog rock'],
+  'Country': ['country', 'country music', 'country rock', 'americana', 'bluegrass'],
+  'Electronic': ['edm', 'electronic', 'house', 'techno', 'dubstep', 'trance', 'drum and bass', 'dnb', 'ambient'],
+  'Latin': ['latin', 'reggaeton', 'bachata', 'salsa', 'latin pop', 'urbano', 'latin trap'],
+  'Jazz': ['jazz', 'smooth jazz', 'bebop', 'swing'],
+  'Classical': ['classical', 'symphony', 'concerto', 'opera', 'orchestral', 'chamber music'],
+  'Indie': ['indie', 'indie rock', 'indie pop', 'alternative', 'lo-fi', 'shoegaze', 'dream pop'],
+  'K-Pop': ['k-pop', 'kpop', 'korean pop'],
+  'Soul': ['soul', 'motown', 'funk', 'neo soul'],
+  'Reggae': ['reggae', 'dancehall', 'ska', 'dub'],
+  'Folk': ['folk', 'acoustic', 'singer-songwriter', 'folk rock'],
+  'Gospel': ['gospel', 'christian', 'worship', 'praise']
+};
+
+function classifyByKeywords(text) {
+  const lower = text.toLowerCase();
+  for (const [genre, keywords] of Object.entries(GENRE_KEYWORDS)) {
+    if (keywords.some(kw => lower.includes(kw))) return genre;
+  }
+  return null;
+}
+
+async function lookupGenreViaSearch(query) {
+  try {
+    const results = await ClientYT.search(query + ' genre');
+    const combined = results.slice(0, 5).map(r => r.title).join(' ');
+    return classifyByKeywords(combined);
+  } catch (_) { return null; }
+}
+
+async function suggestPlaylistsByGenre(progressCb) {
+  const artistTracks = {};
+  const trackArtist = {};
+  for (const t of tracks) {
+    const p = parseTrack(t);
+    const artist = p.artist || p.display;
+    trackArtist[t] = artist;
+    if (!artistTracks[artist]) artistTracks[artist] = [];
+    artistTracks[artist].push(t);
+  }
+
+  const artistGenreCache = JSON.parse(localStorage.getItem('artistGenres') || '{}');
+  const artists = Object.keys(artistTracks);
+  let searched = 0;
+
+  for (const artist of artists) {
+    if (artistGenreCache[artist]) { searched++; continue; }
+    const genre = classifyByKeywords(artist) || classifyByKeywords(artistTracks[artist].join(' '));
+    if (genre) {
+      artistGenreCache[artist] = genre;
+    } else {
+      const looked = await lookupGenreViaSearch(artist);
+      if (looked) artistGenreCache[artist] = looked;
+      else artistGenreCache[artist] = 'Other';
+    }
+    searched++;
+    if (progressCb) progressCb(searched, artists.length);
+  }
+
+  localStorage.setItem('artistGenres', JSON.stringify(artistGenreCache));
 
   const suggestions = {};
   for (const t of tracks) {
-    const lower = t.toLowerCase();
-    for (const [genre, keywords] of Object.entries(genreKeywords)) {
-      if (keywords.some(kw => lower.includes(kw))) {
-        if (!suggestions[genre]) suggestions[genre] = [];
-        if (!suggestions[genre].includes(t)) suggestions[genre].push(t);
-        break;
-      }
-    }
-  }
-  // Group by artist (tracks with " - " pattern)
-  const artistCounts = {};
-  for (const t of tracks) {
-    const p = parseTrack(t);
-    if (p.artist) {
-      if (!artistCounts[p.artist]) artistCounts[p.artist] = [];
-      artistCounts[p.artist].push(t);
-    }
-  }
-  for (const [artist, artistTracks] of Object.entries(artistCounts)) {
-    if (artistTracks.length >= 3) {
-      suggestions[artist] = artistTracks;
-    }
+    const artist = trackArtist[t];
+    const genre = artistGenreCache[artist] || 'Other';
+    if (genre === 'Other') continue;
+    if (!suggestions[genre]) suggestions[genre] = [];
+    suggestions[genre].push(t);
   }
   return suggestions;
 }
@@ -1981,25 +2013,16 @@ document.getElementById('suggestBtn').addEventListener('click', async () => {
 
   btn.textContent = 'Analyzing tracks...';
   btn.disabled = true;
+  content.innerHTML = '<div style="color:#888;text-align:center;padding:30px;">Looking up genres for each artist...</div>';
+  title.textContent = 'Analyzing...';
   modal.classList.add('visible');
 
   let suggestions = {};
-
-  if (isOnline) {
-    try {
-      const r = await fetch(serverUrl + '/api/suggest-playlists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tracks })
-      });
-      const data = await r.json();
-      suggestions = data.suggestions || {};
-    } catch (_) {}
-  }
-
-  if (!Object.keys(suggestions).length) {
-    suggestions = suggestPlaylistsLocal();
-  }
+  try {
+    suggestions = await suggestPlaylistsByGenre((done, total) => {
+      content.innerHTML = `<div style="color:#888;text-align:center;padding:30px;">Looking up genres... ${done}/${total} artists</div>`;
+    });
+  } catch (_) {}
 
   const genres = Object.keys(suggestions);
 
