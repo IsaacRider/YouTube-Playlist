@@ -12,8 +12,10 @@ import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.ServiceList;
 import org.schabi.newpipe.extractor.search.SearchInfo;
 import org.schabi.newpipe.extractor.stream.AudioStream;
+import org.schabi.newpipe.extractor.stream.Stream;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
+import org.schabi.newpipe.extractor.stream.VideoStream;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -85,6 +87,37 @@ public class YouTubeExtractorPlugin extends Plugin {
         });
     }
 
+    private String getBestStreamUrl(StreamInfo info) {
+        // Try audio-only streams first
+        List<AudioStream> audioStreams = info.getAudioStreams();
+        if (audioStreams != null && !audioStreams.isEmpty()) {
+            AudioStream best = audioStreams.get(0);
+            for (AudioStream s : audioStreams) {
+                if (s.getAverageBitrate() > best.getAverageBitrate()) {
+                    best = s;
+                }
+            }
+            if (best.getContent() != null && !best.getContent().isEmpty()) {
+                return best.getContent();
+            }
+        }
+        // Fall back to muxed video+audio streams (lowest resolution for smallest file)
+        List<VideoStream> videoStreams = info.getVideoStreams();
+        if (videoStreams != null && !videoStreams.isEmpty()) {
+            VideoStream smallest = videoStreams.get(0);
+            for (VideoStream s : videoStreams) {
+                if (s.getResolution() != null && smallest.getResolution() != null
+                    && s.getResolution().compareTo(smallest.getResolution()) < 0) {
+                    smallest = s;
+                }
+            }
+            if (smallest.getContent() != null && !smallest.getContent().isEmpty()) {
+                return smallest.getContent();
+            }
+        }
+        return null;
+    }
+
     @PluginMethod
     public void getAudioUrl(PluginCall call) {
         String videoId = call.getString("videoId", "");
@@ -97,25 +130,18 @@ public class YouTubeExtractorPlugin extends Plugin {
             try {
                 String url = "https://www.youtube.com/watch?v=" + videoId;
                 StreamInfo info = StreamInfo.getInfo(ServiceList.YouTube, url);
-
-                List<AudioStream> audioStreams = info.getAudioStreams();
-                if (audioStreams.isEmpty()) {
-                    call.reject("No audio streams found");
+                String streamUrl = getBestStreamUrl(info);
+                if (streamUrl == null) {
+                    int audioCount = info.getAudioStreams() != null ? info.getAudioStreams().size() : 0;
+                    int videoCount = info.getVideoStreams() != null ? info.getVideoStreams().size() : 0;
+                    call.reject("No streams found (audio: " + audioCount + ", video: " + videoCount + ")");
                     return;
                 }
 
-                AudioStream best = audioStreams.get(0);
-                for (AudioStream s : audioStreams) {
-                    if (s.getAverageBitrate() > best.getAverageBitrate()) {
-                        best = s;
-                    }
-                }
-
                 JSObject ret = new JSObject();
-                ret.put("streamUrl", best.getContent());
+                ret.put("streamUrl", streamUrl);
                 ret.put("title", info.getName());
                 ret.put("duration", info.getDuration());
-                ret.put("bitrate", best.getAverageBitrate());
                 call.resolve(ret);
             } catch (Exception e) {
                 call.reject("Extract failed: " + e.getMessage(), e);
@@ -136,23 +162,16 @@ public class YouTubeExtractorPlugin extends Plugin {
             try {
                 String url = "https://www.youtube.com/watch?v=" + videoId;
                 StreamInfo info = StreamInfo.getInfo(ServiceList.YouTube, url);
-
-                List<AudioStream> audioStreams = info.getAudioStreams();
-                if (audioStreams.isEmpty()) {
-                    call.reject("No audio streams found");
+                String streamUrl = getBestStreamUrl(info);
+                if (streamUrl == null) {
+                    int audioCount = info.getAudioStreams() != null ? info.getAudioStreams().size() : 0;
+                    int videoCount = info.getVideoStreams() != null ? info.getVideoStreams().size() : 0;
+                    call.reject("No streams found (audio: " + audioCount + ", video: " + videoCount + ")");
                     return;
-                }
-
-                AudioStream best = audioStreams.get(0);
-                for (AudioStream s : audioStreams) {
-                    if (s.getAverageBitrate() > best.getAverageBitrate()) {
-                        best = s;
-                    }
                 }
 
                 String title = displayTitle.isEmpty() ? info.getName() : displayTitle;
                 String filename = title.replaceAll("[<>:\"/\\\\|?*]", "") + ".mp3";
-                String streamUrl = best.getContent();
 
                 File musicDir = new File(getContext().getFilesDir(), "mse_music");
                 if (!musicDir.exists()) musicDir.mkdirs();
