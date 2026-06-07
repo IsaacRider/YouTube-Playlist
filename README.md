@@ -14,7 +14,7 @@ A free, offline music player for Android. Download songs from YouTube and listen
 ## Features
 
 - **YouTube Downloads** - Paste a YouTube link or search for songs to download as MP3
-- **Spotify Import** - Paste a Spotify playlist link to download all tracks (any playlist size)
+- **Spotify Import** - Paste a Spotify playlist link to download tracks (first 100 songs)
 - **Offline Playback** - All music is saved to your phone and plays without internet
 - **Playlists** - Create and manage playlists, or auto-sort by genre
 - **Background Playback** - Keep listening with notification controls (play, skip, previous)
