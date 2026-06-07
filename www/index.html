@@ -243,7 +243,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.5</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.6</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -2568,6 +2568,32 @@ async function downloadYT() {
   setTimeout(() => { status.textContent = ''; }, 5000);
 }
 
+let ytPlPaused = false;
+let ytPlPauseResolve = null;
+
+function checkConnection() {
+  return navigator.onLine !== false;
+}
+
+async function waitForConnection(status, label) {
+  if (checkConnection()) return;
+  status.className = 'dl-status error';
+  status.textContent = label + ' — paused (no connection). Waiting for internet...';
+  await new Promise(resolve => {
+    const handler = () => {
+      if (checkConnection()) {
+        window.removeEventListener('online', handler);
+        resolve();
+      }
+    };
+    window.addEventListener('online', handler);
+    const poll = setInterval(() => {
+      if (checkConnection()) { clearInterval(poll); window.removeEventListener('online', handler); resolve(); }
+    }, 3000);
+  });
+  status.className = 'dl-status';
+}
+
 async function downloadYTPlaylistStandalone(url, status) {
   const listMatch = url.match(/[?&]list=([a-zA-Z0-9_-]+)/);
   if (!listMatch) { status.className = 'dl-status error'; status.textContent = 'Invalid playlist URL'; return; }
@@ -2581,19 +2607,43 @@ async function downloadYTPlaylistStandalone(url, status) {
     document.getElementById('ytUrl').value = '';
     const downloadedFiles = [];
     let failed = 0;
+    let consecutiveErrors = 0;
+    ytPlPaused = false;
 
     for (let i = 0; i < plData.videos.length; i++) {
+      if (ytPlPaused) {
+        status.textContent = `Paused at ${i}/${plData.videos.length}. Tap download area to resume.`;
+        await new Promise(resolve => { ytPlPauseResolve = resolve; });
+        ytPlPauseResolve = null;
+        ytPlPaused = false;
+      }
+
+      await waitForConnection(status, `Download ${i}/${plData.videos.length}`);
+
       const v = plData.videos[i];
       status.textContent = `Downloading ${i + 1}/${plData.videos.length}...`;
       try {
         const existingFile = isAlreadyDownloaded(v.id);
         if (existingFile) {
           downloadedFiles.push(existingFile);
+          consecutiveErrors = 0;
           continue;
         }
         const result = await ClientYT.download(v.id, v.title);
         downloadedFiles.push(result.filename);
-      } catch (e) { logError('YT Playlist Track', e, 'Video: ' + v.id + ' - ' + v.title); failed++; }
+        consecutiveErrors = 0;
+      } catch (e) {
+        logError('YT Playlist Track', e, 'Video: ' + v.id + ' - ' + v.title);
+        failed++;
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          status.className = 'dl-status error';
+          status.textContent = `Paused after ${consecutiveErrors} errors. Waiting for connection...`;
+          await waitForConnection(status, `Download ${i + 1}/${plData.videos.length}`);
+          await new Promise(r => setTimeout(r, 2000));
+          consecutiveErrors = 0;
+        }
+      }
     }
 
     if (downloadedFiles.length) {
@@ -2728,11 +2778,25 @@ async function processSpotifyQueue() {
     updateSpotifyLogsBtn();
     renderSpotifyModal();
 
+    let consecutiveErrors = 0;
     for (const track of job.tracks) {
       if (spotifyPaused) {
         await new Promise(resolve => { spotifyPauseResolve = resolve; });
         spotifyPauseResolve = null;
       }
+
+      if (!checkConnection()) {
+        spotifyPaused = true;
+        const pauseBtn = document.getElementById('spotifyPauseBtn');
+        pauseBtn.textContent = 'Resume';
+        pauseBtn.style.background = '#1db954';
+        const entry0 = { label: 'Connection lost', text: 'Paused — waiting for internet', cls: 'log-fail' };
+        job.logEntries.unshift(entry0);
+        renderSpotifyModal();
+        await new Promise(resolve => { spotifyPauseResolve = resolve; });
+        spotifyPauseResolve = null;
+      }
+
       const entry = { label: `${track.artist} - ${track.name}`, text: 'Downloading...', cls: 'log-active' };
       job.logEntries.unshift(entry);
       renderSpotifyModal();
@@ -2799,7 +2863,24 @@ async function processSpotifyQueue() {
         entry.text = e.message || 'Error';
         entry.cls = 'log-fail';
         job.failed++;
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          spotifyPaused = true;
+          const pauseBtn = document.getElementById('spotifyPauseBtn');
+          pauseBtn.textContent = 'Resume';
+          pauseBtn.style.background = '#1db954';
+          const errEntry = { label: `${consecutiveErrors} errors in a row`, text: 'Auto-paused. Tap Resume to continue.', cls: 'log-fail' };
+          job.logEntries.unshift(errEntry);
+          renderSpotifyModal();
+          await new Promise(resolve => { spotifyPauseResolve = resolve; });
+          spotifyPauseResolve = null;
+          consecutiveErrors = 0;
+        }
+        renderSpotifyModal();
+        updateSpotifyLogsBtn();
+        continue;
       }
+      consecutiveErrors = 0;
       renderSpotifyModal();
       updateSpotifyLogsBtn();
     }
