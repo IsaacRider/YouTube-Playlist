@@ -29,12 +29,12 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Build APK
+      - name: Build Release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        run: chmod +x gradlew && ./gradlew assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Music-Subscription-Escape
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: MSE
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
