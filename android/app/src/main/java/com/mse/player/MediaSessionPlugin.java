@@ -133,35 +133,25 @@ public class MediaSessionPlugin extends Plugin {
     }
 
     static void sendAction(String action) {
-        if (instance != null) {
-            JSObject data = new JSObject();
-            data.put("action", action);
-            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                if (instance != null) instance.notifyListeners("mediaAction", data);
-            });
+        if (instance != null && instance.getBridge() != null) {
+            String js = "{\"action\":\"" + action + "\"}";
+            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
         }
     }
 
     static void sendSeek(double seconds) {
-        if (instance != null) {
-            JSObject data = new JSObject();
-            data.put("action", "seekto");
-            data.put("seekTime", seconds);
-            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                if (instance != null) instance.notifyListeners("mediaAction", data);
-            });
+        if (instance != null && instance.getBridge() != null) {
+            String js = "{\"action\":\"seekto\",\"seekTime\":" + seconds + "}";
+            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
         }
     }
 
     static void sendPlayTrack(String filename, String playlist) {
-        if (instance != null) {
-            JSObject data = new JSObject();
-            data.put("action", "playTrack");
-            data.put("filename", filename);
-            if (playlist != null) data.put("playlist", playlist);
-            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                if (instance != null) instance.notifyListeners("mediaAction", data);
-            });
+        if (instance != null && instance.getBridge() != null) {
+            String escaped = filename.replace("\\", "\\\\").replace("\"", "\\\"");
+            String js = "{\"action\":\"playTrack\",\"filename\":\"" + escaped + "\"" +
+                (playlist != null ? ",\"playlist\":\"" + playlist.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" : "") + "}";
+            instance.getBridge().triggerWindowJSEvent("mediaAction", js);
         }
     }
 }

@@ -238,7 +238,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.0</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v4.1</div>
         <div class="library-stats" id="libraryStats"></div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
@@ -458,7 +458,9 @@ const NativeMediaSession = (() => {
   const plugin = window.Capacitor?.Plugins?.MediaSession;
   if (!plugin) return null;
 
-  plugin.addListener('mediaAction', (data) => {
+  window.addEventListener('mediaAction', (event) => {
+    let data;
+    try { data = typeof event === 'string' ? JSON.parse(event) : JSON.parse(event.detail || event.data || '{}'); } catch (_) { data = {}; }
     switch (data.action) {
       case 'play': audio.play().catch(() => {}); break;
       case 'pause': audio.pause(); break;
