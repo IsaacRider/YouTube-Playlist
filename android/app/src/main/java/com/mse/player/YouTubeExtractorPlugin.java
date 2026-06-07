@@ -1,5 +1,15 @@
 package com.mse.player;
 
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.Settings;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -18,6 +28,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem;
 import org.schabi.newpipe.extractor.stream.VideoStream;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.List;
@@ -44,6 +55,100 @@ public class YouTubeExtractorPlugin extends Plugin {
             NewPipe.init(DownloaderImpl.getInstance());
             initialized = true;
         }
+    }
+
+    private File getMusicDir() {
+        File musicDir = new File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MSE");
+        if (!musicDir.exists()) musicDir.mkdirs();
+        return musicDir;
+    }
+
+    @PluginMethod
+    public void checkStoragePermission(PluginCall call) {
+        boolean granted;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            granted = Environment.isExternalStorageManager();
+        } else {
+            granted = ContextCompat.checkSelfPermission(getContext(),
+                Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        }
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestStoragePermission(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                call.resolve(new JSObject().put("granted", true));
+            } else {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+                    getActivity().startActivity(intent);
+                } catch (Exception e) {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    getActivity().startActivity(intent);
+                }
+                call.resolve(new JSObject().put("granted", false));
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(getContext(),
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+                call.resolve(new JSObject().put("granted", true));
+            } else {
+                ActivityCompat.requestPermissions(getActivity(),
+                    new String[]{
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    }, 1002);
+                call.resolve(new JSObject().put("granted", false));
+            }
+        }
+    }
+
+    @PluginMethod
+    public void migrateFiles(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                File oldDir = new File(getContext().getFilesDir(), "mse_music");
+                if (!oldDir.exists() || !oldDir.isDirectory()) {
+                    call.resolve(new JSObject().put("migrated", 0));
+                    return;
+                }
+                File newDir = getMusicDir();
+                int count = 0;
+                File[] files = oldDir.listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        if (f.getName().endsWith(".mp3")) {
+                            File dest = new File(newDir, f.getName());
+                            if (!dest.exists()) {
+                                try (FileInputStream in = new FileInputStream(f);
+                                     FileOutputStream out = new FileOutputStream(dest)) {
+                                    byte[] buf = new byte[8192];
+                                    int len;
+                                    while ((len = in.read(buf)) != -1) {
+                                        out.write(buf, 0, len);
+                                    }
+                                }
+                            }
+                            f.delete();
+                            count++;
+                        }
+                    }
+                }
+                File[] remaining = oldDir.listFiles();
+                if (remaining == null || remaining.length == 0) {
+                    oldDir.delete();
+                }
+                call.resolve(new JSObject().put("migrated", count));
+            } catch (Exception e) {
+                call.reject("Migration failed: " + e.getMessage(), e);
+            }
+        });
     }
 
     @PluginMethod
@@ -88,7 +193,6 @@ public class YouTubeExtractorPlugin extends Plugin {
     }
 
     private String getBestStreamUrl(StreamInfo info) {
-        // Try audio-only streams first
         List<AudioStream> audioStreams = info.getAudioStreams();
         if (audioStreams != null && !audioStreams.isEmpty()) {
             AudioStream best = audioStreams.get(0);
@@ -101,7 +205,6 @@ public class YouTubeExtractorPlugin extends Plugin {
                 return best.getContent();
             }
         }
-        // Fall back to muxed video+audio streams (lowest resolution for smallest file)
         List<VideoStream> videoStreams = info.getVideoStreams();
         if (videoStreams != null && !videoStreams.isEmpty()) {
             VideoStream smallest = videoStreams.get(0);
@@ -173,8 +276,7 @@ public class YouTubeExtractorPlugin extends Plugin {
                 String title = displayTitle.isEmpty() ? info.getName() : displayTitle;
                 String filename = title.replaceAll("[<>:\"/\\\\|?*]", "") + ".mp3";
 
-                File musicDir = new File(getContext().getFilesDir(), "mse_music");
-                if (!musicDir.exists()) musicDir.mkdirs();
+                File musicDir = getMusicDir();
                 File outFile = new File(musicDir, filename);
 
                 OkHttpClient client = DownloaderImpl.getInstance().getClient();

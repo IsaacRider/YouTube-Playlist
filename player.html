@@ -407,7 +407,7 @@
 <script>
 const APP_VERSION = 3;
 const IS_NATIVE = typeof window.Capacitor !== 'undefined';
-const MUSIC_DIR = 'mse_music';
+const MUSIC_DIR = IS_NATIVE ? 'Music/MSE' : 'mse_music';
 window.addEventListener('unhandledrejection', e => {
   if (typeof logError === 'function') logError('Unhandled', e.reason);
 });
@@ -563,7 +563,7 @@ async function nativeDownloadToFile(url, filename, headers) {
 
 // --- Capacitor Filesystem helpers ---
 function getFS() { return window.Capacitor.Plugins.Filesystem; }
-const DIR_DATA = 'DATA';
+const DIR_DATA = IS_NATIVE ? 'EXTERNAL_STORAGE' : 'DATA';
 
 async function ensureMusicDir() {
   if (!IS_NATIVE) return;
@@ -972,18 +972,18 @@ const ClientSpotify = {
     const errors = [];
 
     try {
-      const result = await this._getPlaylistViaEmbed(playlistId);
-      if (result.tracks.length) return { tracks: result.tracks, name: result.name || `Spotify (${result.tracks.length} tracks)` };
-    } catch (e) {
-      console.warn('Spotify embed method failed:', e.message);
-      errors.push(e.message);
-    }
-
-    try {
       const result = await this._getPlaylistViaAPI(playlistId);
       if (result.tracks.length) return { tracks: result.tracks, name: result.name || `Spotify (${result.tracks.length} tracks)` };
     } catch (e) {
       console.warn('Spotify API method failed:', e.message);
+      errors.push(e.message);
+    }
+
+    try {
+      const result = await this._getPlaylistViaEmbed(playlistId);
+      if (result.tracks.length) return { tracks: result.tracks, name: result.name || `Spotify (${result.tracks.length} tracks)` };
+    } catch (e) {
+      console.warn('Spotify embed method failed:', e.message);
       errors.push(e.message);
     }
 
@@ -2972,8 +2972,30 @@ async function checkForAppUpdate() {
   // App runs standalone - no server redirect needed
 }
 
+async function ensureStoragePermission() {
+  if (!NativeYT) return;
+  try {
+    const { granted } = await NativeYT.checkStoragePermission();
+    if (!granted) {
+      await NativeYT.requestStoragePermission();
+    }
+  } catch (_) {}
+}
+
+async function migrateOldFiles() {
+  if (!NativeYT) return;
+  try {
+    const { migrated } = await NativeYT.migrateFiles();
+    if (migrated > 0) console.log('Migrated', migrated, 'files to shared storage');
+  } catch (_) {}
+}
+
 async function init() {
-  if (IS_NATIVE) await ensureMusicDir();
+  if (IS_NATIVE) {
+    await ensureStoragePermission();
+    await migrateOldFiles();
+    await ensureMusicDir();
+  }
   setupUpdateListener();
   await updateOnlineStatus();
   await checkForAppUpdate();
