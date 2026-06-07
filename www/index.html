@@ -240,6 +240,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v3.1</div>
         <div class="library-stats" id="libraryStats"></div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
@@ -756,7 +757,7 @@ const ClientYT = {
         const r = await nativePost(endpoint + '/player', headers, { context: pc.context, videoId });
         if (r.status < 200 || r.status >= 300) {
           const errBody = typeof r.data === 'object' ? JSON.stringify(r.data).substring(0, 200) : String(r.data || '').substring(0, 200);
-          lastError = name + ': HTTP ' + r.status + ' — ' + errBody;
+          lastError = name + ': HTTP ' + r.status + ' - ' + errBody;
           continue;
         }
         const data = r.data;
@@ -794,7 +795,7 @@ const ClientYT = {
       }
     }
 
-    throw new Error('All sources failed — ' + lastError);
+    throw new Error('All sources failed - ' + lastError);
   },
 
   async getPlaylistVideos(playlistId) {
@@ -1046,7 +1047,7 @@ function updateLibraryStats(bytes) {
   if (bytes >= 1073741824) size = (bytes / 1073741824).toFixed(1) + ' GB';
   else if (bytes >= 1048576) size = (bytes / 1048576).toFixed(0) + ' MB';
   else size = (bytes / 1024).toFixed(0) + ' KB';
-  el.textContent = `${tracks.length} tracks — ${size}`;
+  el.textContent = `${tracks.length} tracks - ${size}`;
 }
 
 function rebuildOrder() {
@@ -1263,7 +1264,7 @@ async function loadAndPlay(specificFile) {
   loaded = true;
   currentFilename = filename;
   const p = parseTrack(filename);
-  document.getElementById('nowPlaying').textContent = p.artist ? `${p.artist} — ${p.title}` : p.display;
+  document.getElementById('nowPlaying').textContent = p.artist ? `${p.artist} - ${p.title}` : p.display;
   document.getElementById('playIcon').innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>';
   document.getElementById('seek').value = 0;
   document.getElementById('curTime').textContent = '0:00';
@@ -1537,7 +1538,7 @@ function restoreState() {
 
         // Set up UI without auto-playing
         const p = parseTrack(state.track);
-        document.getElementById('nowPlaying').textContent = p.artist ? `${p.artist} — ${p.title}` : p.display;
+        document.getElementById('nowPlaying').textContent = p.artist ? `${p.artist} - ${p.title}` : p.display;
         document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
         updateMediaSession(state.track);
         renderPlaylist();
@@ -2228,7 +2229,7 @@ async function downloadYTPlaylistStandalone(url, status) {
         }
         const result = await ClientYT.download(v.id, v.title);
         downloadedFiles.push(result.filename);
-      } catch (e) { logError('YT Playlist Track', e, 'Video: ' + v.id + ' — ' + v.title); failed++; }
+      } catch (e) { logError('YT Playlist Track', e, 'Video: ' + v.id + ' - ' + v.title); failed++; }
     }
 
     if (downloadedFiles.length) {
@@ -2293,9 +2294,9 @@ function updateSpotifyLogsBtn() {
     const current = active[0];
     const pct = current.total ? Math.round(((current.completed + current.skipped + current.failed) / current.total) * 100) : 0;
     const queued = active.length - 1;
-    btn.textContent = `Spotify Import: ${pct}%` + (queued > 0 ? ` (+${queued} queued)` : '') + ' — Open Logs';
+    btn.textContent = `Spotify Import: ${pct}%` + (queued > 0 ? ` (+${queued} queued)` : '') + ' - Open Logs';
   } else {
-    btn.textContent = 'Spotify Import Complete — Open Logs';
+    btn.textContent = 'Spotify Import Complete - Open Logs';
     setTimeout(() => { btn.classList.remove('visible'); }, 10000);
   }
 }
@@ -2319,7 +2320,7 @@ function renderSpotifyModal() {
       const header = document.createElement('div');
       header.className = 'spotify-job-header';
       const processed = job.completed + job.skipped + job.failed;
-      header.textContent = job.name + (job.done ? ` — Done (${job.completed} added)` : job.started ? ` — ${processed}/${job.total}` : ' — Queued');
+      header.textContent = job.name + (job.done ? ` - Done (${job.completed} added)` : job.started ? ` - ${processed}/${job.total}` : ' - Queued');
       log.appendChild(header);
     }
 
@@ -2344,10 +2345,10 @@ function renderSpotifyModal() {
     const pct = Math.round((totalProcessed / totalTracks) * 100);
     progressFill.style.width = pct + '%';
     progressText.textContent = allDone
-      ? `Done — ${totalCompleted} added, ${totalSkipped} skipped, ${totalFailed} failed`
-      : `${totalProcessed} / ${totalTracks} — ${totalCompleted} added, ${totalSkipped} skipped, ${totalFailed} failed`;
+      ? `Done - ${totalCompleted} added, ${totalSkipped} skipped, ${totalFailed} failed`
+      : `${totalProcessed} / ${totalTracks} - ${totalCompleted} added, ${totalSkipped} skipped, ${totalFailed} failed`;
   }
-  title.textContent = allDone ? 'Import Complete' : `Importing — ${totalProcessed}/${totalTracks}`;
+  title.textContent = allDone ? 'Import Complete' : `Importing - ${totalProcessed}/${totalTracks}`;
 }
 
 async function processSpotifyQueue() {
@@ -2361,7 +2362,7 @@ async function processSpotifyQueue() {
     renderSpotifyModal();
 
     for (const track of job.tracks) {
-      const entry = { label: `${track.artist} — ${track.name}`, text: 'Downloading...', cls: 'log-active' };
+      const entry = { label: `${track.artist} - ${track.name}`, text: 'Downloading...', cls: 'log-active' };
       job.logEntries.unshift(entry);
       renderSpotifyModal();
       updateSpotifyLogsBtn();
@@ -2709,7 +2710,7 @@ document.getElementById('menuExport').addEventListener('click', () => {
   }, 2000);
 });
 
-// (Sync/devices UI removed — app runs standalone)
+// (Sync/devices UI removed - app runs standalone)
 
 
 // --- Download notification toggle ---
@@ -2951,7 +2952,7 @@ async function loadMetadata() {
 }
 
 async function checkForAppUpdate() {
-  // App runs standalone — no server redirect needed
+  // App runs standalone - no server redirect needed
 }
 
 async function init() {
