@@ -63,6 +63,28 @@ public class MediaPlaybackService extends Service {
                 MediaSessionPlugin.sendSeek(pos / 1000.0);
             }
         });
+
+        showInitialNotification();
+    }
+
+    private void showInitialNotification() {
+        Intent launchIntent = new Intent(this, MainActivity.class);
+        launchIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this, 0, launchIntent, PendingIntent.FLAG_IMMUTABLE);
+
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Music Subscription Escape")
+                .setSmallIcon(R.drawable.ic_music_note)
+                .setContentIntent(contentIntent)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOngoing(false)
+                .setSilent(true)
+                .setStyle(new MediaStyle()
+                        .setMediaSession(mediaSession.getSessionToken()))
+                .build();
+
+        startForeground(NOTIFICATION_ID, notification);
     }
 
     @Override
@@ -83,7 +105,7 @@ public class MediaPlaybackService extends Service {
                     break;
             }
         }
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     @Override

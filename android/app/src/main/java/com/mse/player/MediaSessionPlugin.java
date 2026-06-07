@@ -20,12 +20,12 @@ public class MediaSessionPlugin extends Plugin {
 
     private static MediaSessionPlugin instance;
     private static final int NOTIF_PERMISSION_CODE = 1001;
+    private boolean serviceStarted = false;
 
     @Override
     public void load() {
         instance = this;
         requestNotificationPermission();
-        startService();
     }
 
     private void requestNotificationPermission() {
@@ -38,7 +38,9 @@ public class MediaSessionPlugin extends Plugin {
         }
     }
 
-    private void startService() {
+    private void ensureService() {
+        if (serviceStarted) return;
+        serviceStarted = true;
         Intent intent = new Intent(getContext(), MediaPlaybackService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getContext().startForegroundService(intent);
@@ -53,6 +55,7 @@ public class MediaSessionPlugin extends Plugin {
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
 
+        ensureService();
         if (MediaPlaybackService.instance != null) {
             MediaPlaybackService.instance.updateMetadata(title, artist, album);
         }
@@ -65,6 +68,7 @@ public class MediaSessionPlugin extends Plugin {
         double positionSec = call.getDouble("position", 0.0);
         double durationSec = call.getDouble("duration", 0.0);
 
+        ensureService();
         if (MediaPlaybackService.instance != null) {
             MediaPlaybackService.instance.updatePlaybackState(
                     playing,
