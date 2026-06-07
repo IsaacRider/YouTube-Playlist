@@ -131,7 +131,9 @@
 
   /* Fixed bottom player */
   .bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: #181818; border-top: 1px solid #282828; padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom)); z-index: 10; }
-  .bp-title { font-size: 13px; font-weight: 600; text-align: center; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-title { font-size: 13px; font-weight: 600; text-align: center; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-playlist { font-size: 10px; color: #1db954; text-align: center; margin-bottom: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-playlist:hover { text-decoration: underline; }
   .bp-progress { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 10px; color: #888; }
   .bp-progress input[type=range] { flex: 1; accent-color: #1db954; height: 4px; }
   .bp-controls { display: flex; align-items: center; justify-content: center; gap: 16px; }
@@ -238,7 +240,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.0</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.1</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -382,8 +384,26 @@
 
 <div class="copied-toast" id="copiedToast">YouTube link copied!</div>
 
+<!-- Playbar playlist popup -->
+<div class="modal-overlay" id="playbarPlOverlay">
+  <div class="modal" style="max-height:85vh;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <h3 id="playbarPlTitle" style="margin:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></h3>
+      <button id="playbarPlRename" style="background:none;border:none;font-size:16px;cursor:pointer;padding:4px 8px;" title="Rename">✏️</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <button id="playbarPlAddSongs" style="flex:1;padding:8px;border-radius:8px;border:none;background:#1db954;color:#000;font-weight:700;font-size:13px;cursor:pointer;">+ Add Songs</button>
+      <button id="playbarPlPlayAll" style="flex:1;padding:8px;border-radius:8px;border:none;background:#333;color:#eee;font-size:13px;cursor:pointer;">Play All</button>
+    </div>
+    <input type="text" class="modal-search" id="playbarPlSearch" placeholder="Search in playlist...">
+    <div class="modal-list" id="playbarPlTracks"></div>
+    <button class="modal-close" id="playbarPlClose">Close</button>
+  </div>
+</div>
+
 <div class="bottom-player">
   <div class="bp-title" id="nowPlaying">Tap a track to play</div>
+  <div class="bp-playlist" id="nowPlaylist" style="display:none;">All Tracks</div>
   <div class="bp-progress">
     <span id="curTime">0:00</span>
     <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
@@ -1228,6 +1248,8 @@ function renderPlaylist() {
 
   document.getElementById('playlist').querySelectorAll('.track').forEach(el => {
     el.querySelector('.track-info').addEventListener('click', () => {
+      activePlaylist = null;
+      rebuildOrder();
       const ti = parseInt(el.dataset.i);
       idx = order.indexOf(ti);
       if (idx === -1) idx = 0;
@@ -1315,6 +1337,13 @@ function currentSource() {
   return activePlaylist ? getPlaylistTracks(activePlaylist) : tracks;
 }
 
+function updatePlaybarPlaylist() {
+  const el = document.getElementById('nowPlaylist');
+  if (!loaded) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = activePlaylist || 'All Tracks';
+}
+
 async function loadAndPlay(specificFile) {
   let filename;
   if (specificFile) {
@@ -1345,6 +1374,7 @@ async function loadAndPlay(specificFile) {
   document.getElementById('curTime').textContent = '0:00';
   updateMediaSession(filename);
   updateActiveHighlight();
+  updatePlaybarPlaylist();
 
   // Load and play audio
   if (IS_NATIVE && NativeMediaSession) {
@@ -1611,6 +1641,7 @@ function restoreState() {
         document.getElementById('nowPlaying').textContent = p.artist ? `${p.artist} - ${p.title}` : p.display;
         document.getElementById('playIcon').innerHTML = '<path d="M8 5v14l11-7z"/>';
         updateMediaSession(state.track);
+        updatePlaybarPlaylist();
         renderPlaylist();
 
         // Load audio and seek to saved position but don't play
@@ -1707,8 +1738,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('playlistDetail').className = 'pl-section';
     viewingPlaylist = null;
     if (which === 'all') {
-      activePlaylist = null;
-      rebuildOrder();
       renderPlaylist();
     }
   });
@@ -1768,6 +1797,7 @@ async function deletePlaylist(name) {
   if (activePlaylist === name) {
     activePlaylist = null;
     rebuildOrder();
+    updatePlaybarPlaylist();
     renderPlaylist();
   }
   renderPlaylistCards();
@@ -1888,6 +1918,106 @@ document.getElementById('plBackBtn').addEventListener('click', () => {
 
 document.getElementById('plPlayAll').addEventListener('click', () => {
   if (viewingPlaylist) playEntirePlaylist(viewingPlaylist);
+});
+
+// --- Playbar Playlist Popup ---
+document.getElementById('nowPlaylist').addEventListener('click', () => {
+  const name = activePlaylist;
+  if (!name) return;
+  openPlaybarPlaylistPopup(name);
+});
+
+function openPlaybarPlaylistPopup(name) {
+  document.getElementById('playbarPlTitle').textContent = name;
+  renderPlaybarPlaylistTracks(name);
+  document.getElementById('playbarPlOverlay').classList.add('visible');
+}
+
+function renderPlaybarPlaylistTracks(name) {
+  const plTracks = getPlaylistTracks(name);
+  const container = document.getElementById('playbarPlTracks');
+  const query = (document.getElementById('playbarPlSearch').value || '').toLowerCase();
+  if (!plTracks.length) {
+    container.innerHTML = '<div style="color:#555;font-size:13px;padding:20px 0;text-align:center;">Empty playlist.</div>';
+    return;
+  }
+  const filtered = query ? plTracks.filter(t => trackName(t).toLowerCase().includes(query)) : plTracks;
+  container.innerHTML = filtered.map((t, i) => {
+    const p = parseTrack(t);
+    const rowNum = plTracks.length - plTracks.indexOf(t);
+    return `<div class="modal-item ${currentFilename === t ? 'active' : ''}" data-file="${encodeURIComponent(t)}" style="justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:8px;flex:1;overflow:hidden;">
+        <span style="color:#888;font-size:11px;min-width:20px;">${rowNum}</span>
+        <div style="overflow:hidden;">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;${currentFilename === t ? 'color:#1db954;font-weight:700;' : ''}">${esc(p.title || p.display)}</div>
+          ${p.artist ? `<div style="font-size:11px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.artist)}</div>` : ''}
+        </div>
+      </div>
+      <span class="playbar-pl-remove" data-track="${encodeURIComponent(t)}" style="color:#555;cursor:pointer;padding:4px 8px;font-size:14px;" title="Remove">✕</span>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('.modal-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.playbar-pl-remove')) return;
+      const file = decodeURIComponent(el.dataset.file);
+      playSpecificTrack(file, name);
+    });
+  });
+
+  container.querySelectorAll('.playbar-pl-remove').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = decodeURIComponent(el.dataset.track);
+      const updated = (playlists[name] || []).filter(x => x !== t);
+      savePlaylist(name, updated);
+      renderPlaybarPlaylistTracks(name);
+    });
+  });
+}
+
+document.getElementById('playbarPlSearch').addEventListener('input', () => {
+  const name = activePlaylist;
+  if (name) renderPlaybarPlaylistTracks(name);
+});
+
+document.getElementById('playbarPlClose').addEventListener('click', () => {
+  document.getElementById('playbarPlOverlay').classList.remove('visible');
+  document.getElementById('playbarPlSearch').value = '';
+});
+
+document.getElementById('playbarPlOverlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    document.getElementById('playbarPlOverlay').classList.remove('visible');
+    document.getElementById('playbarPlSearch').value = '';
+  }
+});
+
+document.getElementById('playbarPlPlayAll').addEventListener('click', () => {
+  const name = activePlaylist;
+  if (name) {
+    playEntirePlaylist(name);
+    document.getElementById('playbarPlOverlay').classList.remove('visible');
+  }
+});
+
+document.getElementById('playbarPlRename').addEventListener('click', () => {
+  const name = activePlaylist;
+  if (!name) return;
+  const newName = prompt('Rename playlist:', name);
+  if (newName && newName.trim() && newName.trim() !== name) {
+    renamePlaylist(name, newName.trim());
+    document.getElementById('playbarPlTitle').textContent = newName.trim();
+    updatePlaybarPlaylist();
+  }
+});
+
+document.getElementById('playbarPlAddSongs').addEventListener('click', () => {
+  const name = activePlaylist;
+  if (!name) return;
+  document.getElementById('playbarPlOverlay').classList.remove('visible');
+  document.getElementById('playbarPlSearch').value = '';
+  showAddSongsModal(name);
 });
 
 document.getElementById('createPlBtn').addEventListener('click', () => {
