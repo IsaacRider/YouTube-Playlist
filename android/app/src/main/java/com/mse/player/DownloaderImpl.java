@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import javax.annotation.Nonnull;
+import androidx.annotation.NonNull;
 
 import okhttp3.OkHttpClient;
 import okhttp3.RequestBody;
@@ -44,7 +44,7 @@ public class DownloaderImpl extends Downloader {
     }
 
     @Override
-    public Response execute(@Nonnull Request request)
+    public Response execute(@NonNull Request request)
             throws IOException, ReCaptchaException {
 
         final String httpMethod = request.httpMethod();
