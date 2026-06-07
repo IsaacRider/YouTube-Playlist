@@ -1335,7 +1335,7 @@ function updateMediaSession(filename) {
   const artist = p.artist || 'Unknown Artist';
   const album = activePlaylist || 'All Tracks';
 
-  if ('mediaSession' in navigator) {
+  if (!IS_NATIVE && 'mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album });
     navigator.mediaSession.setActionHandler('play', () => { audio.play(); });
     navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
@@ -1610,7 +1610,7 @@ audio.addEventListener('timeupdate', () => {
   }
   document.getElementById('curTime').textContent = fmt(audio.currentTime);
   document.getElementById('durTime').textContent = fmt(audio.duration);
-  if ('mediaSession' in navigator && audio.duration) {
+  if (!IS_NATIVE && 'mediaSession' in navigator && audio.duration) {
     navigator.mediaSession.setPositionState({ duration: audio.duration, playbackRate: audio.playbackRate, position: audio.currentTime });
   }
   if (NativeMediaSession && audio.duration) {

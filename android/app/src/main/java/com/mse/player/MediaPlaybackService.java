@@ -58,11 +58,13 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
+                updatePlaybackState(true, position, duration);
                 MediaSessionPlugin.sendAction("play");
             }
 
             @Override
             public void onPause() {
+                updatePlaybackState(false, position, duration);
                 MediaSessionPlugin.sendAction("pause");
             }
 
@@ -232,12 +234,15 @@ public class MediaPlaybackService extends MediaBrowserServiceCompat {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        super.onStartCommand(intent, flags, startId);
         if (intent != null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case "ACTION_PLAY":
+                    updatePlaybackState(true, position, duration);
                     MediaSessionPlugin.sendAction("play");
                     break;
                 case "ACTION_PAUSE":
+                    updatePlaybackState(false, position, duration);
                     MediaSessionPlugin.sendAction("pause");
                     break;
                 case "ACTION_NEXT":
