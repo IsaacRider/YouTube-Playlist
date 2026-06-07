@@ -13,7 +13,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onPause() {
+    public void onPause() {
         super.onPause();
         WebView wv = getBridge() != null ? getBridge().getWebView() : null;
         if (wv != null) {
