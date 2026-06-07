@@ -450,6 +450,35 @@ let viewingPlaylist = null;
 let waitingWorker = null;
 let playQueue = [];
 
+// --- Native HTTP helper (bypasses CapacitorHttp fetch patching) ---
+function getHttp() { return window.Capacitor.Plugins.CapacitorHttp; }
+
+async function nativePost(url, headers, body) {
+  if (!IS_NATIVE) {
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    return { status: r.status, data: r.ok ? await r.json() : null };
+  }
+  const r = await getHttp().post({ url, headers, data: body });
+  return { status: r.status, data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data };
+}
+
+async function nativeDownloadToFile(url, filename, headers) {
+  if (!IS_NATIVE) {
+    const r = await fetch(url, { headers });
+    if (!r.ok) throw new Error('Download failed: HTTP ' + r.status);
+    return await r.arrayBuffer();
+  }
+  const r = await getHttp().get({ url, headers, responseType: 'arraybuffer' });
+  if (r.status < 200 || r.status >= 300) throw new Error('Download failed: HTTP ' + r.status);
+  if (r.data && typeof r.data === 'string') {
+    const bin = atob(r.data);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return buf.buffer;
+  }
+  return r.data;
+}
+
 // --- Capacitor Filesystem helpers ---
 function getFS() { return window.Capacitor.Plugins.Filesystem; }
 const DIR_DATA = 'DATA';
@@ -614,16 +643,18 @@ const ClientYT = {
     let lastError = '';
     for (const pc of this._playerClients) {
       try {
+        const name = pc.context.client.clientName;
         const headers = { 'Content-Type': 'application/json' };
         if (pc.ua) headers['User-Agent'] = pc.ua;
-        const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
-          method: 'POST', headers,
-          body: JSON.stringify({ context: pc.context, videoId })
-        });
-        if (!r.ok) { lastError = pc.context.client.clientName + ': HTTP ' + r.status; continue; }
-        const data = await r.json();
+        const r = await nativePost(
+          this.API_BASE + '/player?key=' + this.INNERTUBE_KEY,
+          headers,
+          { context: pc.context, videoId }
+        );
+        if (r.status < 200 || r.status >= 300) { lastError = name + ': HTTP ' + r.status; continue; }
+        const data = r.data;
         if (data.playabilityStatus?.status !== 'OK') {
-          lastError = pc.context.client.clientName + ': ' + (data.playabilityStatus?.reason || 'not playable');
+          lastError = name + ': ' + (data.playabilityStatus?.reason || 'not playable');
           continue;
         }
         const formats = (data?.streamingData?.adaptiveFormats || [])
@@ -632,10 +663,10 @@ const ClientYT = {
           .filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url)
           .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
         const preferred = audioFormats.find(f => f.mimeType.includes('mp4')) || audioFormats[0];
-        if (!preferred) { lastError = pc.context.client.clientName + ': no audio stream with direct URL'; continue; }
+        if (!preferred) { lastError = name + ': no audio stream with direct URL'; continue; }
         const title = data?.videoDetails?.title || videoId;
         const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
-        return { url: preferred.url, title, duration, mimeType: preferred.mimeType };
+        return { url: preferred.url, title, duration, mimeType: preferred.mimeType, ua: pc.ua };
       } catch (e) {
         lastError = pc.context.client.clientName + ': ' + e.message;
       }
@@ -683,9 +714,9 @@ const ClientYT = {
     const info = await this.getAudioUrl(videoId);
     const filename = (displayTitle || info.title).replace(/[<>:"/\\|?*]/g, '') + '.mp3';
 
-    const resp = await fetch(info.url);
-    if (!resp.ok) throw new Error('Audio download failed');
-    const buffer = await resp.arrayBuffer();
+    const dlHeaders = {};
+    if (info.ua) dlHeaders['User-Agent'] = info.ua;
+    const buffer = await nativeDownloadToFile(info.url, filename, dlHeaders);
 
     if (IS_NATIVE) {
       await saveTrackNative(filename, buffer);
