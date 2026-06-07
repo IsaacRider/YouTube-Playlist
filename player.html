@@ -240,7 +240,7 @@
     <div style="position:relative;">
       <button class="hamburger-btn" id="hamburgerBtn">☰</button>
       <div class="hamburger-menu" id="hamburgerMenu">
-        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.1</div>
+        <div style="padding:6px 16px 2px;font-size:11px;color:#555;">v5.2</div>
         <button id="menuUploadMp3">Upload MP3s</button>
         <button id="menuUploadFolder">Upload Playlist Folder</button>
         <hr>
@@ -1599,6 +1599,7 @@ function saveState() {
     shuffle: shuffleOn,
     volume: parseInt(document.getElementById('volume').value)
   }));
+  savePlaylistsToFile();
 }
 
 function restoreState() {
@@ -1744,18 +1745,42 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // --- Playlists ---
+async function loadPlaylistsFromFile() {
+  if (!IS_NATIVE) return;
+  try {
+    const result = await getFS().readFile({ path: MUSIC_DIR + '/_playlists.json', directory: DIR_DATA, encoding: 'utf8' });
+    const data = JSON.parse(result.data);
+    if (data.playlists) playlists = { ...data.playlists, ...playlists };
+    if (data.metadata) metadata = { ...data.metadata, ...metadata };
+    if (data.playerState) {
+      const existing = localStorage.getItem('playerState');
+      if (!existing) localStorage.setItem('playerState', JSON.stringify(data.playerState));
+    }
+  } catch (_) {}
+}
+
+async function savePlaylistsToFile() {
+  if (!IS_NATIVE) return;
+  try {
+    let playerState = null;
+    try { playerState = JSON.parse(localStorage.getItem('playerState') || 'null'); } catch (_) {}
+    const data = JSON.stringify({ playlists, metadata, playerState });
+    await getFS().writeFile({ path: MUSIC_DIR + '/_playlists.json', directory: DIR_DATA, data, encoding: 'utf8' });
+  } catch (_) {}
+}
+
 async function loadPlaylists() {
   try { playlists = JSON.parse(localStorage.getItem('playlists') || '{}'); } catch (_) {}
+  await loadPlaylistsFromFile();
+  localStorage.setItem('playlists', JSON.stringify(playlists));
 
   if (isOnline) {
     try {
       const r = await fetch(serverUrl + '/api/playlists');
       const serverPl = await r.json();
-      // Merge: server playlists override, but keep local-only ones
       const merged = { ...playlists, ...serverPl };
       playlists = merged;
       localStorage.setItem('playlists', JSON.stringify(playlists));
-      // Push any local-only playlists to server
       for (const name of Object.keys(playlists)) {
         if (!(name in serverPl)) {
           fetch(serverUrl + '/api/playlists', {
@@ -1767,6 +1792,7 @@ async function loadPlaylists() {
       }
     } catch (_) {}
   }
+  await savePlaylistsToFile();
   renderPlaylistCards();
   syncMediaTree();
 }
@@ -1783,6 +1809,7 @@ async function savePlaylist(name, trackList) {
       });
     } catch (_) {}
   }
+  await savePlaylistsToFile();
   renderPlaylistCards();
 }
 
@@ -1800,6 +1827,7 @@ async function deletePlaylist(name) {
     updatePlaybarPlaylist();
     renderPlaylist();
   }
+  await savePlaylistsToFile();
   renderPlaylistCards();
 }
 
@@ -2053,6 +2081,7 @@ async function renamePlaylist(oldName, newName) {
     viewingPlaylist = newName;
     document.getElementById('plDetailName').textContent = newName;
   }
+  await savePlaylistsToFile();
   renderPlaylistCards();
 }
 
