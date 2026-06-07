@@ -844,6 +844,11 @@ const ClientYT = {
   },
 
   async download(videoId, displayTitle) {
+    const alreadyFile = isAlreadyDownloaded(videoId);
+    if (alreadyFile) {
+      return { filename: alreadyFile, title: displayTitle || alreadyFile.replace(/\.mp3$/, '') };
+    }
+
     if (NativeYT) {
       const r = await NativeYT.download({ videoId, title: displayTitle || '' });
       const filename = r.filename;
@@ -2188,9 +2193,17 @@ async function downloadYT() {
     try {
       const videoId = extractVideoId(url);
       if (!videoId) throw new Error('Invalid YouTube URL');
-      if (isAlreadyDownloaded(videoId)) {
+      const existing = isAlreadyDownloaded(videoId);
+      if (existing) {
         status.className = 'dl-status';
         status.textContent = 'Already downloaded';
+        if (viewingPlaylist) {
+          const pl = playlists[viewingPlaylist] || [];
+          if (!pl.includes(existing)) {
+            await savePlaylist(viewingPlaylist, [...pl, existing]);
+            renderPlaylistDetail();
+          }
+        }
       } else {
         const result = await ClientYT.download(videoId);
         status.className = 'dl-status success';
@@ -2239,9 +2252,9 @@ async function downloadYTPlaylistStandalone(url, status) {
       const v = plData.videos[i];
       status.textContent = `Downloading ${i + 1}/${plData.videos.length}...`;
       try {
-        if (isAlreadyDownloaded(v.id)) {
-          const existing = Object.entries(metadata).find(([, info]) => info.youtube_url && info.youtube_url.includes(v.id));
-          if (existing) downloadedFiles.push(existing[0]);
+        const existingFile = isAlreadyDownloaded(v.id);
+        if (existingFile) {
+          downloadedFiles.push(existingFile);
           continue;
         }
         const result = await ClientYT.download(v.id, v.title);
@@ -2288,12 +2301,12 @@ function extractVideoId(url) {
 }
 
 function isAlreadyDownloaded(videoId) {
-  const ytUrl = 'https://www.youtube.com/watch?v=' + videoId;
-  for (const [, info] of Object.entries(metadata)) {
-    if (info.youtube_url && info.youtube_url.includes(videoId)) return true;
+  for (const [filename, info] of Object.entries(metadata)) {
+    if (info.youtube_url && info.youtube_url.includes(videoId)) return filename;
   }
-  return false;
+  return null;
 }
+
 
 const spotifyQueue = [];
 let spotifyProcessing = false;
@@ -2420,16 +2433,24 @@ async function processSpotifyQueue() {
             entry.cls = 'log-fail';
             job.failed++;
           } else {
-            const result = await ClientYT.download(results[0].id, results[0].title);
-            entry.text = '✓ Done';
-            entry.cls = 'log-done';
-            job.completed++;
-            job.downloadedFiles.push(result.filename);
-            const scrollY = window.scrollY;
-            rebuildOrder();
-            await updateCachedStatus();
-            renderPlaylist();
-            window.scrollTo(0, scrollY);
+            const existingFile = isAlreadyDownloaded(results[0].id);
+            if (existingFile) {
+              entry.text = 'Skipped (already have)';
+              entry.cls = 'log-skip';
+              job.skipped = (job.skipped || 0) + 1;
+              job.downloadedFiles.push(existingFile);
+            } else {
+              const result = await ClientYT.download(results[0].id, results[0].title);
+              entry.text = '✓ Done';
+              entry.cls = 'log-done';
+              job.completed++;
+              job.downloadedFiles.push(result.filename);
+              const scrollY = window.scrollY;
+              rebuildOrder();
+              await updateCachedStatus();
+              renderPlaylist();
+              window.scrollTo(0, scrollY);
+            }
           }
         }
       } catch (e) {
@@ -2920,22 +2941,35 @@ function addToDownloadQueue(title, url, videoId) {
       } else {
         const vid = videoId || extractVideoId(url);
         if (!vid) throw new Error('Invalid URL');
-        const result = await ClientYT.download(vid, title);
-        statusEl.textContent = '✓ Done';
-        statusEl.className = 'dl-queue-status done';
-        playDownloadSound();
-
-        if (viewingPlaylist && result.filename) {
-          const pl = playlists[viewingPlaylist] || [];
-          if (!pl.includes(result.filename)) {
-            await savePlaylist(viewingPlaylist, [...pl, result.filename]);
+        const existingFile = isAlreadyDownloaded(vid);
+        if (existingFile) {
+          statusEl.textContent = 'Already downloaded';
+          statusEl.className = 'dl-queue-status done';
+          if (viewingPlaylist) {
+            const pl = playlists[viewingPlaylist] || [];
+            if (!pl.includes(existingFile)) {
+              await savePlaylist(viewingPlaylist, [...pl, existingFile]);
+              renderPlaylistDetail();
+            }
           }
-        }
+        } else {
+          const result = await ClientYT.download(vid, title);
+          statusEl.textContent = '✓ Done';
+          statusEl.className = 'dl-queue-status done';
+          playDownloadSound();
 
-        rebuildOrder();
-        await updateCachedStatus();
-        renderPlaylist();
-        if (viewingPlaylist) renderPlaylistDetail();
+          if (viewingPlaylist && result.filename) {
+            const pl = playlists[viewingPlaylist] || [];
+            if (!pl.includes(result.filename)) {
+              await savePlaylist(viewingPlaylist, [...pl, result.filename]);
+            }
+          }
+
+          rebuildOrder();
+          await updateCachedStatus();
+          renderPlaylist();
+          if (viewingPlaylist) renderPlaylistDetail();
+        }
       }
     } catch (e) {
       logError('Queue Download', e, 'Title: ' + (title || videoId || url));
