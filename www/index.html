@@ -559,17 +559,44 @@ const ClientYT = {
     client: { clientName: 'WEB', clientVersion: '2.20250601.00.00', hl: 'en', gl: 'US' }
   },
 
-  _playerContext: {
-    client: {
-      clientName: 'ANDROID_VR',
-      clientVersion: '1.61.48',
-      androidSdkVersion: 32,
-      deviceMake: 'Oculus',
-      deviceModel: 'Quest 3',
-      hl: 'en',
-      gl: 'US'
+  _playerClients: [
+    {
+      context: {
+        client: {
+          clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+          clientVersion: '2.0',
+          hl: 'en', gl: 'US'
+        },
+        thirdParty: { embedUrl: 'https://www.google.com' }
+      },
+      ua: null
+    },
+    {
+      context: {
+        client: {
+          clientName: 'ANDROID_VR',
+          clientVersion: '1.61.48',
+          androidSdkVersion: 32,
+          deviceMake: 'Oculus',
+          deviceModel: 'Quest 3',
+          hl: 'en', gl: 'US'
+        }
+      },
+      ua: 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; eureka-user Build/SQ3A.220605.009.A1) gzip'
+    },
+    {
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '20.03.02',
+          deviceMake: 'Apple',
+          deviceModel: 'iPhone16,2',
+          hl: 'en', gl: 'US'
+        }
+      },
+      ua: 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)'
     }
-  },
+  ],
 
   async search(query) {
     const r = await fetch(this.API_BASE + '/search?key=' + this.INNERTUBE_KEY, {
@@ -595,28 +622,36 @@ const ClientYT = {
   },
 
   async getAudioUrl(videoId) {
-    const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; eureka-user Build/SQ3A.220605.009.A1) gzip'
-      },
-      body: JSON.stringify({ context: this._playerContext, videoId })
-    });
-    if (!r.ok) throw new Error('Failed to get video info');
-    const data = await r.json();
-    if (data.playabilityStatus?.status !== 'OK') {
-      throw new Error(data.playabilityStatus?.reason || 'Video not playable');
+    let lastError = '';
+    for (const pc of this._playerClients) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (pc.ua) headers['User-Agent'] = pc.ua;
+        const r = await fetch(this.API_BASE + '/player?key=' + this.INNERTUBE_KEY, {
+          method: 'POST', headers,
+          body: JSON.stringify({ context: pc.context, videoId })
+        });
+        if (!r.ok) { lastError = pc.context.client.clientName + ': HTTP ' + r.status; continue; }
+        const data = await r.json();
+        if (data.playabilityStatus?.status !== 'OK') {
+          lastError = pc.context.client.clientName + ': ' + (data.playabilityStatus?.reason || 'not playable');
+          continue;
+        }
+        const formats = (data?.streamingData?.adaptiveFormats || [])
+          .concat(data?.streamingData?.formats || []);
+        const audioFormats = formats
+          .filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url)
+          .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        const preferred = audioFormats.find(f => f.mimeType.includes('mp4')) || audioFormats[0];
+        if (!preferred) { lastError = pc.context.client.clientName + ': no audio stream with direct URL'; continue; }
+        const title = data?.videoDetails?.title || videoId;
+        const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
+        return { url: preferred.url, title, duration, mimeType: preferred.mimeType };
+      } catch (e) {
+        lastError = pc.context.client.clientName + ': ' + e.message;
+      }
     }
-    const formats = data?.streamingData?.adaptiveFormats || [];
-    const audioFormats = formats
-      .filter(f => f.mimeType && f.mimeType.startsWith('audio/'))
-      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-    const preferred = audioFormats.find(f => f.mimeType.includes('mp4')) || audioFormats[0];
-    if (!preferred || !preferred.url) throw new Error('No audio stream found');
-    const title = data?.videoDetails?.title || videoId;
-    const duration = parseInt(data?.videoDetails?.lengthSeconds || '0');
-    return { url: preferred.url, title, duration, mimeType: preferred.mimeType };
+    throw new Error('All clients failed — ' + lastError);
   },
 
   async getPlaylistVideos(playlistId) {
